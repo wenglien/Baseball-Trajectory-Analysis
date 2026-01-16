@@ -1,0 +1,100 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Model files (large files, should be downloaded separately)
+model/yolov4-tiny-baseball-416/saved_model.pb
+model/yolov4-tiny-baseball-416/variables/
+*.pb
+*.h5
+*.ckpt
+*.pt
+*.weights
+*.onnx
+*.mlmodel
+
+# Training outputs
+yolov8/runs/
+*.csv
+*.png
+*.jpg
+!yolov8/datasets/**/*.jpg
+!yolov8/datasets/**/*.txt
+
+# Video files (test videos, can be large)
+videos/
+*.mp4
+*.avi
+*.mov
+*.mkv
+!pitcher.mp4  # Keep example video if needed
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# MediaPipe
+*.tflite
+
+# CoreML
+*.mlmodelc
+
+# Test outputs
+test_output/
+output/
+Overlay.mp4
+*_overlay.mp4
