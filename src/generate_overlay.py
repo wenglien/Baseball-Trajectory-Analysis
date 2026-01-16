@@ -6,7 +6,14 @@ from src.utils import draw_ball_curve, fill_lost_tracking
 from src.FrameInfo import FrameInfo
 
 
-def generate_overlay(video_frames, width, height, fps, outputPath, show_preview: bool = True):
+def generate_overlay(
+    video_frames: list[list[FrameInfo]],
+    width: int,
+    height: int,
+    fps: int,
+    outputPath: str,
+    show_preview: bool = True,
+) -> None:
     print("Saving overlay result to", outputPath)
     
     codecs_to_try = [
@@ -19,7 +26,8 @@ def generate_overlay(video_frames, width, height, fps, outputPath, show_preview:
     codec_name = None
     for name, codec in codecs_to_try:
         try:
-            out = cv2.VideoWriter(outputPath, codec, fps / 2, (width, height))
+            # Use original fps for output video (removed /2 which was halving the frame rate)
+            out = cv2.VideoWriter(outputPath, codec, fps, (width, height))
             if out.isOpened():
                 codec_name = name
                 print(f"使用編解碼器：{codec_name}")
@@ -112,14 +120,24 @@ def generate_overlay(video_frames, width, height, fps, outputPath, show_preview:
     
     # Release resources
     if out:
-        out.release()
+        try:
+            out.release()
+        except Exception as e:
+            print(f"警告：釋放影片寫入器時發生錯誤：{e}")
     try:
         cv2.destroyAllWindows()
-    except:
+    except Exception:
         pass
 
 
-def image_registration(ref_image, offset_image, shifts, list_idx, width, height):
+def image_registration(
+    ref_image: np.ndarray,
+    offset_image: FrameInfo,
+    shifts: dict,
+    list_idx: int,
+    width: int,
+    height: int,
+) -> np.ndarray:
     # The shift is calculated once for each video and stored
     if list_idx not in shifts:
         xoff, yoff = cross_correlation_shifts(

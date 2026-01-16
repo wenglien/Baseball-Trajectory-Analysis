@@ -13,13 +13,25 @@ mp_drawing = mp.solutions.drawing_utils
 def get_pitch_frames_yolov8(
     video_path: str,
     yolo_model: YOLO,
-    # Default using low threshold, make the small ball easier to be detected; Can be overridden by external
     conf_threshold: float = 0.1,
     show_preview: bool = False,
-):
+) -> tuple[list[FrameInfo], int, int, int]:
     """
-    使用 YOLOv8 模型偵測棒球，搭配 Mediapipe Pose + SORT 追蹤，
+    使用 YOLOv8 模型偵測棒球，搭配 Mediapipe Pose 追蹤，
     輸出與原本 get_pitch_frames 類似的 pitch_frames 結構。
+    
+    Args:
+        video_path: 影片檔案路徑
+        yolo_model: 已載入的 YOLOv8 模型
+        conf_threshold: YOLOv8 置信度閾值（預設 0.1，較低值讓小球更容易被偵測）
+        show_preview: 是否顯示即時預覽視窗
+    
+    Returns:
+        tuple: (pitch_frames, width, height, fps)
+            - pitch_frames: FrameInfo 列表，包含每一 frame 的球位置資訊
+            - width: 影片寬度
+            - height: 影片高度
+            - fps: 影片幀率
     """
     print("Video from: ", video_path)
     # Use OpenCV to read the video information (width, height, FPS), the actual frame is read by YOLOv8 later
@@ -60,15 +72,20 @@ def get_pitch_frames_yolov8(
         min_tracking_confidence=0.5,
     )
 
-    # Use the YOLOv8 video streaming interface, the same as the way you tested the video with CLI
-    results_generator = yolo_model.predict(
-        source=video_path,
-        conf=conf_threshold,
-        iou=0.3,
-        imgsz=1280,
-        stream=True,
-        verbose=False,
-    )
+    try:
+        # Use the YOLOv8 video streaming interface, the same as the way you tested the video with CLI
+        results_generator = yolo_model.predict(
+            source=video_path,
+            conf=conf_threshold,
+            iou=0.3,
+            imgsz=1280,
+            stream=True,
+            verbose=False,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"無法使用 YOLOv8 處理影片：{video_path}\n錯誤：{e}"
+        ) from e
 
     for result in results_generator:
         # The original image returned by YOLO is BGR
@@ -145,6 +162,12 @@ def get_pitch_frames_yolov8(
         frame_id += 1
 
     print("Processing complete")
+    
+    # Cleanup resources
+    try:
+        pose.close()
+    except Exception:
+        pass
     try:
         cv2.destroyAllWindows()
     except Exception:
@@ -158,9 +181,6 @@ def get_pitch_frames_yolov8(
     )
 
     fill_lost_tracking(pitch_frames)
-
-    return pitch_frames, width, height, fps
-
 
     return pitch_frames, width, height, fps
 

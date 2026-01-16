@@ -25,11 +25,17 @@ def run_yolov8_pipeline(
     """
     將原本 pitching_overlay_yolov8.py 的流程封裝成函式，方便 GUI 或其他程式呼叫。
 
-    - video_paths: 要處理的投球影片路徑清單
-    - weights_path: YOLOv8 權重檔路徑 (.pt)
-    - conf: YOLOv8 置信度閾值
-    - output_path: 輸出 overlay 影片路徑
-    - show_preview: 是否顯示預覽畫面
+    Args:
+        video_paths: 要處理的投球影片路徑清單
+        weights_path: YOLOv8 權重檔路徑 (.pt)
+        conf: YOLOv8 置信度閾值（建議 0.03~0.1，數值越低越容易偵測到小球）
+        output_path: 輸出 overlay 影片路徑
+        show_preview: 是否顯示預覽畫面
+    
+    Raises:
+        ValueError: 當 video_paths 為空時
+        FileNotFoundError: 當找不到權重檔案時
+        RuntimeError: 當處理影片時發生錯誤
     """
     if not video_paths:
         raise ValueError("video_paths 不可為空，至少需要一支投球影片。")
@@ -67,11 +73,14 @@ def run_yolov8_pipeline(
                     f"Warning: 視訊 {os.path.basename(video_path)} 中沒有偵測到足夠的球軌跡，將略過此影片的 overlay。"
                 )
         except Exception as e:
-            print(
+            error_msg = (
                 f"Error: Sorry we could not get enough baseball detection from the video, "
                 f"video {os.path.basename(video_path)} will not be overlayed"
             )
-            print(e)
+            print(error_msg)
+            print(f"詳細錯誤：{e}")
+            # Log the error but continue processing other videos
+            continue
 
     # Only generate overlay when at least one video detects enough ball trajectories
     valid_pitch_frames = [pf for pf in pitch_frames if pf and len(pf) > 0]

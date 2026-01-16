@@ -4,11 +4,13 @@
 
 ## 功能特色
 
--**棒球偵測**：使用 YOLOv4-tiny 或 YOLOv8 模型偵測棒球位置
--**姿勢分析**：整合 MediaPipe Pose 分析投球姿勢與關鍵點
--**影片 Overlay**：自動生成帶有分析結果的視覺化影片
--**圖形介面**：提供GUI應用程式
--**iOS 支援**：包含 iOS 版本的實作（Swift + CoreML）
+- **棒球偵測**：使用 YOLOv4-tiny 或 YOLOv8 模型偵測棒球位置
+- **姿勢分析**：整合 MediaPipe Pose 分析投球姿勢與關鍵點
+- **軌跡追蹤**：自動追蹤球的飛行軌跡並繪製 overlay
+- **出球點修正**：使用手腕關節自動修正出球點位置，讓軌跡更準確
+- **影片 Overlay**：自動生成帶有分析結果的視覺化影片（包含姿勢骨架、球軌跡）
+- **圖形介面**：提供 GUI 應用程式
+- **iOS 支援**：包含 iOS 版本的實作（Swift + CoreML）
 
 ## 系統需求
 
@@ -20,7 +22,7 @@
 
 ## 安裝步驟
 
-1. **clone專案**
+1. **clone 專案**
 
    ```bash
    git clone https://github.com/yourusername/speedgun-mobile.git
@@ -72,8 +74,27 @@ python pitching_overlay.py --video path/to/video.mp4 --output output.mp4
 #### 使用 YOLOv8
 
 ```bash
-python pitching_overlay_yolov8.py --video path/to/video.mp4 --output output.mp4
+# 單一影片模式
+python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03
+
+# 指定權重檔案和置信度閾值
+python pitching_overlay_yolov8.py -v path/to/video.mp4 -w yolov8/runs/baseball_yolov8n2/weights/best.pt --conf 0.05
+
+# 處理資料夾內所有影片
+python pitching_overlay_yolov8.py -f videos/videos1 --conf 0.03
 ```
+
+**參數說明：**
+
+- `-v, --video_file`: 單一影片檔案路徑
+- `-f, --videos_folder`: 包含多個影片的資料夾路徑
+- `-w, --weights`: YOLOv8 權重檔路徑（預設：`yolov8/runs/baseball_yolov8n2/weights/best.pt`）
+- `-c, --conf`: YOLOv8 置信度閾值（預設：0.1，建議 0.03~0.1 之間調整，數值越低越容易偵測到小球）
+
+**輸出：**
+
+- 單一影片模式：輸出到與輸入影片相同的資料夾，檔名為 `Overlay_yolov8.mp4`
+- 資料夾模式：輸出到該資料夾，檔名為 `Overlay_yolov8.mp4`
 
 ## 專案結構
 
@@ -105,11 +126,19 @@ speedgun-mobile/
 
 ## 技術架構
 
-- **物件偵測**：YOLOv4-tiny / YOLOv8
+- **物件偵測**：YOLOv4-tiny / YOLOv8 (Ultralytics)
 - **姿勢估計**：MediaPipe Pose
-- **物件追蹤**：SORT (Simple Online and Realtime Tracking)
+- **物件追蹤**：SORT (Simple Online and Realtime Tracking) / 簡化追蹤（YOLOv8 版本）
 - **影像處理**：OpenCV
 - **深度學習框架**：TensorFlow, Ultralytics
+
+## 最新更新
+
+### YOLOv8 版本改進
+
+- YOLOv8 官方影片串流介面，提升偵測穩定性
+- 用手腕關節修正出球點，讓軌跡起點更準確
+- 優化軌跡顯示：固定長度尾巴，讓速度感更貼合實際飛行
 
 ## 開發
 
@@ -130,4 +159,3 @@ python train_yolov8.py
 - [MediaPipe](https://mediapipe.dev/) - 姿勢估計
 - [SORT](https://github.com/abewley/sort) - 物件追蹤演算法
 - [Ultralytics](https://github.com/ultralytics/ultralytics) - YOLOv8 實作
-

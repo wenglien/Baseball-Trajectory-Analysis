@@ -4,7 +4,9 @@ import numpy as np
 from src.FrameInfo import FrameInfo
 
 
-def draw_ball_curve(frame, trajectory, max_points: int | None = 15):
+def draw_ball_curve(
+    frame: np.ndarray, trajectory: list, max_points: int | None = 15
+) -> np.ndarray:
     """
     在畫面上畫出球的軌跡：
       - 只顯示軌跡最後 max_points 個點，讓線條長度與球速比較貼合，
@@ -36,7 +38,7 @@ def draw_ball_curve(frame, trajectory, max_points: int | None = 15):
     return frame
 
 
-def fill_lost_tracking(frame_list):
+def fill_lost_tracking(frame_list: list) -> None:
     balls_x = [frame.ball[0] for frame in frame_list if frame.ball_in_frame]
     balls_y = [frame.ball[1] for frame in frame_list if frame.ball_in_frame]
 
@@ -92,6 +94,6 @@ def fill_lost_tracking(frame_list):
                 # print('Fill', x, y)
 
 
-def distance(x, y):
+def distance(x: tuple, y: tuple) -> float:
     temp = (x[0] - y[0]) ** 2 + (x[1] - y[1]) ** 2
     return temp ** (0.5)
