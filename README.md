@@ -2,7 +2,7 @@
 
 深度學習技術分析棒球投球姿勢與球軌跡的開源專案，支援影片分析和即時處理。
 
-## 功能特色
+## 功能
 
 - **棒球偵測**：使用 YOLOv4-tiny 或 YOLOv8 模型偵測棒球位置
 - **姿勢分析**：整合 MediaPipe Pose 分析投球姿勢與關鍵點
@@ -63,7 +63,6 @@ python gui_app.py
 3. 點擊「開始分析」
 4. 分析完成後，會在影片同一個資料夾輸出 `Overlay.mp4`
 
-### 命令列使用
 
 #### 使用 YOLOv4
 
@@ -84,7 +83,7 @@ python pitching_overlay_yolov8.py -v path/to/video.mp4 -w yolov8/runs/baseball_y
 python pitching_overlay_yolov8.py -f videos/videos1 --conf 0.03
 ```
 
-**參數說明：**
+**參數：**
 
 - `-v, --video_file`: 單一影片檔案路徑
 - `-f, --videos_folder`: 包含多個影片的資料夾路徑
@@ -124,7 +123,7 @@ speedgun-mobile/
 └── test_scripts/              # 測試腳本
 ```
 
-## 技術架構
+## 架構
 
 - **物件偵測**：YOLOv4-tiny / YOLOv8 (Ultralytics)
 - **姿勢估計**：MediaPipe Pose
@@ -132,15 +131,11 @@ speedgun-mobile/
 - **影像處理**：OpenCV
 - **深度學習框架**：TensorFlow, Ultralytics
 
-## 最新更新
-
 ### YOLOv8 版本改進
 
 - YOLOv8 官方影片串流介面，提升偵測穩定性
 - 用手腕關節修正出球點，讓軌跡起點更準確
 - 優化軌跡顯示：固定長度尾巴，讓速度感更貼合實際飛行
-
-## 開發
 
 ### 訓練自訂模型
 
