@@ -1,4 +1,4 @@
-# Speedgun - 投球姿勢與球軌跡分析
+# 投球姿勢與球軌跡分析
 
 深度學習技術分析棒球投球姿勢與球軌跡的開源專案，支援影片分析和即時處理。
 
@@ -7,10 +7,12 @@
 - **棒球偵測**：使用 YOLOv4-tiny 或 YOLOv8 模型偵測棒球位置
 - **姿勢分析**：整合 MediaPipe Pose 分析投球姿勢與關鍵點
 - **軌跡追蹤**：自動追蹤球的飛行軌跡並繪製 overlay
+- **球速測定**：精確測量球速，包含出手球速、最大速度和飛行距離
+- **場地校正**：透過手動標記投手板和本壘板進行相機校正，提升精確度
 - **出球點修正**：使用手腕關節自動修正出球點位置，讓軌跡更準確
-- **影片 Overlay**：自動生成帶有分析結果的視覺化影片（包含姿勢骨架、球軌跡）
+- **透視校正**：考慮相機透視變形，提供更準確的距離和速度計算
+- **影片 Overlay**：自動生成帶有分析結果的視覺化影片（包含姿勢骨架、球軌跡、球速資訊）
 - **圖形介面**：提供 GUI 應用程式
-- **iOS 支援**：包含 iOS 版本的實作（Swift + CoreML）
 
 ## 系統需求
 
@@ -70,16 +72,32 @@ python gui_app.py
 python pitching_overlay.py --video path/to/video.mp4 --output output.mp4
 ```
 
-#### 使用 YOLOv8
+#### 使用 YOLOv8（推薦，支援球速測定）
 
+**基本使用（啟用球速測定和場地校正）：**
 ```bash
 # 單一影片模式
 python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03
 
-# 指定權重檔案和置信度閾值
-python pitching_overlay_yolov8.py -v path/to/video.mp4 -w yolov8/runs/baseball_yolov8n2/weights/best.pt --conf 0.05
+# 1. 程式會先顯示第一幀畫面
+# 2. 依序點擊投手板和本壘板位置
+# 3. 按 ENTER 確認，開始處理
+# 4. 完成後會在影片上顯示球速資訊
+```
 
-# 處理資料夾內所有影片
+**快速模式（不進行場地校正）：**
+```bash
+python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03 --no-calibration
+# 注意：不校正的情況下，球速計算可能不準確
+```
+
+**停用球速計算：**
+```bash
+python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03 --no-speed
+```
+
+**處理資料夾內所有影片：**
+```bash
 python pitching_overlay_yolov8.py -f videos/videos1 --conf 0.03
 ```
 
@@ -88,12 +106,14 @@ python pitching_overlay_yolov8.py -f videos/videos1 --conf 0.03
 - `-v, --video_file`: 單一影片檔案路徑
 - `-f, --videos_folder`: 包含多個影片的資料夾路徑
 - `-w, --weights`: YOLOv8 權重檔路徑（預設：`yolov8/runs/baseball_yolov8n2/weights/best.pt`）
-- `-c, --conf`: YOLOv8 置信度閾值（預設：0.1，建議 0.03~0.1 之間調整，數值越低越容易偵測到小球）
+- `-c, --conf`: YOLOv8 置信度閾值（預設：0.1，建議 0.03~0.1 之間調整）
+- `--no-speed`: 停用球速計算功能
+- `--no-calibration`: 停用場地校正（使用預設參數，球速可能不準確）
 
 **輸出：**
 
 - 單一影片模式：輸出到與輸入影片相同的資料夾，檔名為 `Overlay_yolov8.mp4`
-- 資料夾模式：輸出到該資料夾，檔名為 `Overlay_yolov8.mp4`
+- 包含視覺化的球速資訊：出手球速、最大速度、飛行距離
 
 ## 專案結構
 
@@ -132,7 +152,6 @@ speedgun-mobile/
 - **深度學習框架**：TensorFlow, Ultralytics
 
 ### YOLOv8 版本改進
-
 - YOLOv8 官方影片串流介面，提升偵測穩定性
 - 用手腕關節修正出球點，讓軌跡起點更準確
 - 優化軌跡顯示：固定長度尾巴，讓速度感更貼合實際飛行

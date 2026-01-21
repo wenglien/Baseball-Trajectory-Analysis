@@ -42,11 +42,41 @@ def fill_lost_tracking(frame_list: list) -> None:
     balls_x = [frame.ball[0] for frame in frame_list if frame.ball_in_frame]
     balls_y = [frame.ball[1] for frame in frame_list if frame.ball_in_frame]
 
-    # print(balls_x)
-    # print(balls_y)
-
     # If there are no or almost no ball detection points, skip the filling, avoid polyfit error
     # At least three points are needed to fit the quadratic polynomial
+    if len(balls_x) < 3:
+        return
+
+    # 移除異常值（使用 IQR 方法）
+    def remove_outliers(x_data, y_data):
+        if len(x_data) < 5:
+            return x_data, y_data
+        
+        # 計算 X 方向的速度變化
+        velocities = []
+        for i in range(1, len(x_data)):
+            dx = abs(x_data[i] - x_data[i-1])
+            velocities.append(dx)
+        
+        if not velocities:
+            return x_data, y_data
+        
+        # 使用中位數過濾異常值
+        median_vel = np.median(velocities)
+        threshold = median_vel * 3  # 3倍中位數作為閾值
+        
+        clean_x, clean_y = [x_data[0]], [y_data[0]]
+        for i in range(1, len(x_data)):
+            dx = abs(x_data[i] - x_data[i-1])
+            if dx <= threshold:
+                clean_x.append(x_data[i])
+                clean_y.append(y_data[i])
+        
+        return clean_x, clean_y
+    
+    # 清理異常值
+    balls_x, balls_y = remove_outliers(balls_x, balls_y)
+    
     if len(balls_x) < 3:
         return
 

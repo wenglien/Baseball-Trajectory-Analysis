@@ -85,6 +85,7 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+*.backup
 *.swp
 
 # MediaPipe
