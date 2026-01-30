@@ -2,9 +2,8 @@
 將現有的 YOLOv4-tiny 棒球模型 (TensorFlow SavedModel)
 轉成 CoreML 模型，供 iOS App 使用。
 
-注意：
 - YOLOv4-tiny 的 TensorFlow 結構與自定義後處理較複雜，
-  此腳本提供一個參考流程，實際上你可能需要根據
+  此腳本提供一個參考流程，實際上需要根據
   自己訓練時的輸入尺寸 / 輸出節點名稱做調整。
 """
 
@@ -33,7 +32,7 @@ def convert_to_coreml(concrete_func: tf.types.experimental.ConcreteFunction):
     """
     將 TensorFlow ConcreteFunction 轉成 CoreML。
     這裡假設輸入為一個 416x416x3 的 float32 影像張量；
-    若你原本訓練時使用其他尺寸，請依實際情況調整。
+    若你原本訓練時使用其他尺寸，依實際情況調整。
     """
     print("Converting to CoreML...")
 

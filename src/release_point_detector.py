@@ -1,20 +1,11 @@
-"""
-投球出手點多訊號融合檢測器
-結合手腕速度、肘關節角度、前腳落地等多個生物力學訊號
-"""
 import numpy as np
 from typing import List, Tuple, Optional, Dict
 from collections import deque
 
 
 class ReleasePointDetector:
-    """多訊號融合的出球點檢測器"""
     
     def __init__(self, fps: int = 30):
-        """
-        Args:
-            fps: 影片幀率
-        """
         self.fps = fps
         self.pose_history = []  # 儲存每一幀的 pose landmarks
         self.frame_count = 0
@@ -306,16 +297,6 @@ class ReleasePointDetector:
         return None
     
     def detect_release_point(self) -> Optional[Dict]:
-        """
-        融合多個訊號檢測出球點
-        
-        Returns:
-            {
-                'frame_idx': 出球幀索引,
-                'confidence': 信心度 (0-1),
-                'signals': 各訊號的檢測結果
-            }
-        """
         if len(self.pose_history) < 10:
             return None
         

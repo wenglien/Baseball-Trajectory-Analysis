@@ -9,10 +9,9 @@ from ultralytics import YOLO
 
 from src.get_pitch_frames_yolov8 import get_pitch_frames_yolov8
 from src.generate_overlay import generate_overlay
-from src.ball_speed_calculator import BallSpeedCalculator, FieldCalibrationTool
+from src.ball_speed_calculator import BallSpeedCalculator
 from src.release_point_detector import ReleasePointDetector
 
-# Ignore warnings
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
 
@@ -29,17 +28,17 @@ def run_yolov8_pipeline(
     manual_distance_meters: Optional[float] = None,
 ) -> None:
     """
-    將原本 pitching_overlay_yolov8.py 的流程封裝成函式，方便 GUI 或其他程式呼叫。
+    將pitching_overlay_yolov8.py 流程封裝成函式，方便GUI呼叫。
 
     Args:
         video_paths: 要處理的投球影片路徑清單
         weights_path: YOLOv8 權重檔路徑 (.pt)
-        conf: YOLOv8 置信度閾值（建議 0.03~0.1，數值越低越容易偵測到小球）
+        conf: YOLOv8 閾值（建議 0.03~0.1，數值越低越容易偵測到小球）
         output_path: 輸出 overlay 影片路徑
         show_preview: 是否顯示預覽畫面
         enable_speed_calculation: 是否啟用球速計算
-        enable_field_calibration: 是否啟用場地校正（需要手動標記）
-        manual_distance_meters: 手動輸入的場地距離（米），若指定則跳過互動校正
+        enable_field_calibration: （已廢止/保留相容）過去用於互動式場地校正（點選參考點）
+        manual_distance_meters: 手動輸入的投手到捕手距離（米）。若未指定，預設使用 18.44m
     
     Raises:
         ValueError: 當 video_paths 為空時
@@ -58,10 +57,8 @@ def run_yolov8_pipeline(
     print(f"Loading YOLOv8 model from: {weights_path}")
     yolo_model = YOLO(weights_path)
 
-    # 初始化球速計算器
     speed_calculator = None
     if enable_speed_calculation:
-        # 先讀取第一支影片的基本資訊
         import cv2
         cap = cv2.VideoCapture(video_paths[0])
         if cap.isOpened():
@@ -69,73 +66,25 @@ def run_yolov8_pipeline(
             video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             video_fps = int(cap.get(cv2.CAP_PROP_FPS))
             
-            # 讀取第一幀用於校正
             ret, first_frame = cap.read()
             cap.release()
             
-            if ret and enable_field_calibration:
-                # 檢查是否使用手動輸入距離
-                if manual_distance_meters is not None:
-                    # 使用手動輸入的距離進行改進的校正
-                    print("\n" + "="*60)
-                    print(f"使用手動輸入距離進行校正：{manual_distance_meters} 公尺")
-                    print("="*60)
-                    
-                    # 改進的校正邏輯：
-                    # 假設畫面覆蓋的實際場地範圍約為輸入距離的 70%
-                    # 這是基於典型棒球影片的拍攝角度估算
-                    coverage_ratio = 0.7
-                    estimated_field_coverage = manual_distance_meters * coverage_ratio
-                    estimated_pixels_per_meter = video_height / estimated_field_coverage
-                    
-                    speed_calculator = BallSpeedCalculator(
-                        fps=video_fps,
-                        video_width=video_width,
-                        video_height=video_height,
-                        pixels_per_meter=estimated_pixels_per_meter,
-                        theoretical_distance=manual_distance_meters  # 記錄理論距離
-                    )
-                    print(f"✓ 球速計算功能已啟用")
-                    print(f"  估計畫面覆蓋範圍: {estimated_field_coverage:.1f} 公尺")
-                    print(f"  估計比例: {estimated_pixels_per_meter:.1f} pixels/meter\n")
-                else:
-                    # 啟動互動式場地校正工具
-                    print("\n" + "="*60)
-                    print("啟動場地校正工具...")
-                    print("="*60)
-                    
-                    calib_tool = FieldCalibrationTool(first_frame)
-                    ref_points = calib_tool.mark_reference_points()
-                    
-                    if ref_points:
-                        # 創建球速計算器並校正
-                        speed_calculator = BallSpeedCalculator(
-                            fps=video_fps,
-                            video_width=video_width,
-                            video_height=video_height
-                        )
-                        speed_calculator.calibrate_from_reference(
-                            pitcher_mound_pixel=ref_points[0],
-                            home_plate_pixel=ref_points[1],
-                            real_distance=18.44  # 標準棒球場距離
-                        )
-                        print("✓ 球速計算功能已啟用\n")
-                    else:
-                        print("⚠ 校正已取消，將不計算球速")
-                        enable_speed_calculation = False
-            elif ret and not enable_field_calibration:
-                # 不啟用校正，使用預設值
-                print("⚠ 未啟用場地校正，球速計算可能不準確")
+            if ret:
+                pitch_distance_m = manual_distance_meters if manual_distance_meters is not None else 18.44
+                print("\n" + "="*60)
+                print("球速計算：使用手動輸入距離（不再需要點選校正）")
+                print(f"投手到捕手距離：{pitch_distance_m:.2f} 公尺")
+                print("="*60 + "\n")
                 speed_calculator = BallSpeedCalculator(
                     fps=video_fps,
                     video_width=video_width,
                     video_height=video_height,
-                    pixels_per_meter=35.0  # 預設值，需要根據實際情況調整
+                    theoretical_distance=pitch_distance_m,
                 )
 
     pitch_frames = []
     width = height = fps = None
-    all_speed_info = []  # 收集所有影片的球速資訊
+    all_speed_info = []
 
     for idx, video_path in enumerate(video_paths):
         print(f"Processing Video {idx + 1}: {video_path}")
@@ -144,7 +93,6 @@ def run_yolov8_pipeline(
             continue
 
         try:
-            # Use the adjustable conf_threshold, so that the trained YOLOv8 is easier to detect the ball
             ball_frames, width, height, fps, speed_info = get_pitch_frames_yolov8(
                 video_path,
                 yolo_model,
@@ -167,14 +115,11 @@ def run_yolov8_pipeline(
             )
             print(error_msg)
             print(f"詳細錯誤：{e}")
-            # Log the error but continue processing other videos
             continue
 
-    # Only generate overlay when at least one video detects enough ball trajectories
     valid_pitch_frames = [pf for pf in pitch_frames if pf and len(pf) > 0]
 
     if valid_pitch_frames and width is not None and height is not None and fps is not None:
-        # 使用第一支影片的球速資訊（如果有多支影片）
         speed_info_for_overlay = all_speed_info[0] if all_speed_info else None
         
         generate_overlay(
@@ -194,7 +139,6 @@ def run_yolov8_pipeline(
 
 
 def _parse_cli_args():
-    """CLI 模式下使用的參數解析。"""
     optparser = OptionParser()
     optparser.add_option(
         "-f",
@@ -238,7 +182,7 @@ def _parse_cli_args():
         "--no-calibration",
         dest="no_calibration",
         action="store_true",
-        help="跳過場地校正（不會彈出標記視窗）",
+        help="（已廢止）過去用於跳過點選校正；目前已移除點選校正，此參數保留相容",
         default=False,
     )
     optparser.add_option(
@@ -246,7 +190,7 @@ def _parse_cli_args():
         "--distance",
         dest="distance",
         type="float",
-        help="手動輸入場地距離（公尺），例如：18.44 或 15。若指定則跳過互動校正",
+        help="手動輸入投手到捕手距離（公尺），例如：18.44 或 15",
         default=None,
     )
     return optparser.parse_args()
@@ -254,8 +198,9 @@ def _parse_cli_args():
 
 if __name__ == "__main__":
     options, args = _parse_cli_args()
+    if options.no_calibration:
+        print("⚠ 已移除點選校正（Field Calibration）；`--no-calibration` 參數目前不影響結果，保留相容用。")
 
-    # Decide input videos and output path
     video_paths: list[str] = []
     if options.videoFile:
         video_file = options.videoFile

@@ -17,26 +17,23 @@ class SpeedgunGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Speedgun - 投球姿勢與球軌跡分析")
-        self.root.geometry("720x320")
+        self.root.geometry("720x380")
         self.video_paths: List[str] = []
         self.status_text = tk.StringVar(value="請先選擇 1~2 支投球影片。")
 
-        # YOLOv4 TensorFlow model (lazy load)
         self.infer = None
 
-        # YOLO 版本：v4 / v8
         self.yolo_version = tk.StringVar(value="v4")
-        # YOLOv8 權重與 conf
         self.yolov8_weights = tk.StringVar(
             value=os.path.join(
                 "yolov8", "runs", "baseball_yolov8n2", "weights", "best.pt"
             )
         )
         self.yolov8_conf = tk.DoubleVar(value=0.1)
+        self.pitch_distance_meters = tk.DoubleVar(value=18.44)
 
         self._build_ui()
 
-    # ---------------- UI ----------------
     def _build_ui(self):
         padding = {"padx": 16, "pady": 8}
 
@@ -51,7 +48,6 @@ class SpeedgunGUI:
         self.entry_videos = tk.Entry(frame_select)
         self.entry_videos.pack(side="left", fill="x", expand=True, padx=(8, 0))
 
-        # YOLO 版本選擇
         frame_yolo = tk.Frame(self.root)
         frame_yolo.pack(fill="x", **padding)
 
@@ -63,7 +59,6 @@ class SpeedgunGUI:
             frame_yolo, text="YOLOv8 (PyTorch)", variable=self.yolo_version, value="v8"
         ).pack(side="left", padx=(8, 0))
 
-        # YOLOv8 相關設定
         frame_yolo8 = tk.Frame(self.root)
         frame_yolo8.pack(fill="x", **padding)
 
@@ -74,6 +69,15 @@ class SpeedgunGUI:
         tk.Label(frame_yolo8, text="conf:").pack(side="left", padx=(8, 0))
         entry_conf = tk.Entry(frame_yolo8, textvariable=self.yolov8_conf, width=6)
         entry_conf.pack(side="left")
+
+        frame_distance = tk.Frame(self.root)
+        frame_distance.pack(fill="x", **padding)
+        tk.Label(frame_distance, text="投手到捕手距離（公尺）:").pack(side="left")
+        entry_distance = tk.Entry(
+            frame_distance, textvariable=self.pitch_distance_meters, width=8
+        )
+        entry_distance.pack(side="left", padx=(4, 0))
+        tk.Label(frame_distance, text="（預設 18.44m）").pack(side="left", padx=(8, 0))
 
         frame_actions = tk.Frame(self.root)
         frame_actions.pack(fill="x", **padding)
@@ -92,12 +96,12 @@ class SpeedgunGUI:
             "說明：\n"
             "1. 按「選擇影片」挑一支投球影片（mp4/avi/mov/mkv）。\n"
             "2. 按「開始分析」，程式會執行：YOLO 棒球偵測 + Mediapipe 姿勢 + overlay。\n"
-            "3. 分析完成後，會在同一個資料夾輸出 Overlay.mp4。"
+            "3. 球速會使用「投手到捕手距離（公尺）」做計算（不再需要點選校正）。\n"
+            "4. 分析完成後，會在同一個資料夾輸出 Overlay.mp4。"
         )
         lbl_info = tk.Label(self.root, text=info_text, justify="left")
         lbl_info.pack(fill="x", padx=16, pady=(8, 0))
 
-    # ---------------- Actions ----------------
     def choose_videos(self):
         paths = filedialog.askopenfilenames(
             title="選擇 1~2 支投球影片",
@@ -108,7 +112,6 @@ class SpeedgunGUI:
         )
         if not paths:
             return
-        # 最多只用前兩支，符合架構圖的兩段影片
         self.video_paths = list(paths[:2])
         self.entry_videos.delete(0, tk.END)
         self.entry_videos.insert(0, "; ".join(self.video_paths))
@@ -128,14 +131,12 @@ class SpeedgunGUI:
             if len(self.video_paths) == 1:
                 base_dir = os.path.dirname(self.video_paths[0])
             else:
-                # 多支影片時，以第一支影片所在資料夾為輸出位置
                 base_dir = os.path.dirname(self.video_paths[0])
 
             yolo_ver = self.yolo_version.get()
             if yolo_ver == "v4":
                 self.status_text.set("使用 YOLOv4 分析影片中，請稍候...")
                 output_path = os.path.join(base_dir, "Overlay.mp4")
-                # 直接呼叫共用的 YOLOv4 pipeline
                 run_yolov4_pipeline(self.video_paths, output_path, show_preview=False)
             else:
                 self.status_text.set("使用 YOLOv8 分析影片中，請稍候...")
@@ -146,6 +147,7 @@ class SpeedgunGUI:
                     conf=float(self.yolov8_conf.get()),
                     output_path=output_path,
                     show_preview=False,
+                    manual_distance_meters=float(self.pitch_distance_meters.get()),
                 )
 
             self.status_text.set(f"完成！結果已輸出到：{output_path}")

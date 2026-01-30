@@ -7,11 +7,6 @@ from src.FrameInfo import FrameInfo
 def draw_ball_curve(
     frame: np.ndarray, trajectory: list, max_points: int | None = 15
 ) -> np.ndarray:
-    """
-    在畫面上畫出球的軌跡：
-      - 只顯示軌跡最後 max_points 個點，讓線條長度與球速比較貼合，
-        避免一開始就出現貫穿整個畫面的長線。
-    """
     trajectory_weight = 0.5
     temp_frame = frame.copy()
 

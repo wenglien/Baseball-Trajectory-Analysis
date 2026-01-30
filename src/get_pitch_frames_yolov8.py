@@ -21,13 +21,13 @@ def get_pitch_frames_yolov8(
     speed_calculator: Optional[BallSpeedCalculator] = None,
 ) -> tuple[list[FrameInfo], int, int, int, dict]:
     """
-    使用 YOLOv8 模型偵測棒球，搭配 Mediapipe Pose 追蹤，
+    使用 YOLOv8 模型偵測棒球，配 Mediapipe Pose 追蹤，
     輸出與原本 get_pitch_frames 類似的 pitch_frames 結構。
     
     Args:
         video_path: 影片檔案路徑
         yolo_model: 已載入的 YOLOv8 模型
-        conf_threshold: YOLOv8 置信度閾值（預設 0.15，建議 0.1-0.3 之間）
+        conf_threshold: YOLOv8 閾值（預設 0.15，建議 0.1-0.3 之間）
         show_preview: 是否顯示即時預覽視窗
         speed_calculator: 球速計算器（可選，用於計算球速）
     
@@ -165,10 +165,10 @@ def get_pitch_frames_yolov8(
             optimal_release_frame_idx = release_detection['frame_idx']
             
             print(f"\n{'='*60}")
-            print(f"🎯 多訊號出球點檢測結果")
+            print(f"多訊號出球點檢測結果")
             print(f"{'='*60}")
             print(f"  檢測幀索引: {optimal_release_frame_idx}")
-            print(f"  信心度: {release_detection['confidence']:.2f}")
+            print(f"  準確度: {release_detection['confidence']:.2f}")
             
             signals = release_detection['signals']
             print(f"  訊號 S1 (手腕速度峰值): {signals['s1_wrist_speed']}")
@@ -284,13 +284,13 @@ def get_pitch_frames_yolov8(
                     if frame_id == optimal_release_frame_idx:
                         should_record_release = True
                         is_multi_signal = True
-                        print(f"✅ 檢測到出球點（幀 {frame_id}）")
+                        print(f"檢測到出球點（幀 {frame_id}）")
                 
                 # 如果多訊號檢測的幀沒有球，或者沒有多訊號檢測結果
                 # 則使用第一個有球的幀
                 if not should_record_release and frame_id == first_ball_frame_idx:
                     should_record_release = True
-                    print(f"⚠️ 使用第一個球偵測點作為出球點（幀 {frame_id}）")
+                    print(f"使用第一個球偵測點作為出球點（幀 {frame_id}）")
                 
                 if should_record_release and has_pose:
                     image_h, image_w, _ = frame_rgb.shape
@@ -337,20 +337,17 @@ def get_pitch_frames_yolov8(
                             print(f"   球偵測座標: ({centerX}, {centerY})")
                             print(f"   距離: {distance_to_ball:.1f} 像素")
                         else:
-                            print(f"   ⚠️ 手指位置 ({fx}, {fy}) 距離球太遠 ({distance_to_ball:.0f} 像素)")
-                            print(f"   ⚠️ 使用球的偵測位置 ({centerX}, {centerY}) 作為出球點")
-                            # 退回使用球的位置作為出球點
+                            print(f"   手指位置 ({fx}, {fy}) 距離球太遠 ({distance_to_ball:.0f} 像素)")
+                            print(f"   使用球的偵測位置 ({centerX}, {centerY}) 作為出球點")
                             release_point = (centerX, centerY)
                             first_release_adjusted = True
-                        # ⚠️ 重要：不要修改 centerX, centerY！保持球的實際偵測位置
                     else:
-                        # 沒有找到手指/手腕，使用球的位置
-                        print(f"   ⚠️ 無法偵測手指/手腕，使用球的位置作為出球點")
+                        print(f"   無法偵測手指/手腕，使用球的位置作為出球點")
                         release_point = (centerX, centerY)
                         first_release_adjusted = True
                 elif should_record_release and not has_pose:
                     # 沒有 pose 資料，直接使用球的位置
-                    print(f"   ⚠️ 無姿態資料，使用球的位置作為出球點")
+                    print(f"   無姿態資料，使用球的位置作為出球點")
                     release_point = (centerX, centerY)
                     first_release_adjusted = True
 

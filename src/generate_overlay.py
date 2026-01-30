@@ -144,7 +144,6 @@ def generate_overlay(
                 ]
                 box_height = 150
             elif speed_info.get('initial_speed_kmh'):
-                # 只有初速度時的簡化顯示
                 init_speed_kmh = speed_info['initial_speed_kmh']
                 init_speed_mph = kmh_to_mph(init_speed_kmh)
                 max_speed_kmh = speed_info['max_speed_kmh']
