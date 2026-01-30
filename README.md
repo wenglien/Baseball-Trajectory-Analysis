@@ -4,47 +4,74 @@
 
 ## 功能
 
-- 使用 YOLOv4-tiny 或 YOLOv8 模型偵測棒球位置
-- 整合 MediaPipe Pose 分析投球姿勢與關鍵點
-- 自動追蹤球的飛行軌跡並繪製 overlay
+- YOLOv4-tiny或YOLOv8 模型偵測棒球位置
+- 整合MediaPipe Pose分析投球姿勢與關鍵點
+- 追蹤球的飛行軌跡並繪製 overlay
 - 測量球速，包含出手球速、最大速度和飛行距離
 - 使用手腕關節自動修正出球點位置，讓軌跡更準確
+- 考慮相機透視變形，提供更準確的距離和速度計算
 - 自動生成帶有分析結果的視覺化影片（包含姿勢骨架、球軌跡、球速資訊）
 
 
 ## 系統需求
 
 - Python 3.10+
-- TensorFlow 2.16+
-- OpenCV 4.9+
-- MediaPipe 0.10+
-- Ultralytics (YOLOv8)
+- pip（搭配 venv 虛擬環境）
+- macOS / Windows / Linux 皆可
+- TensorFlow、OpenCV、MediaPipe、Ultralytics（YOLOv8）
 
 ## 安裝步驟
 
-1. **clone**
+1. **下載專案**
 
-   ```bash
-   git clone https://github.com/yourusername/speedgun-mobile.git
-   cd speedgun-mobile
-   ```
+```bash
+git clone https://github.com/yourusername/speedgun-mobile.git
+cd speedgun-mobile
+```
 
-2. **建立環境**
+2. **建立虛擬環境**
 
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Windows: .venv\Scripts\activate
-   ```
+macOS / Linux：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -U pip
+```
+
+Windows（PowerShell）：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+```
 
 3. **安裝依賴套件**
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+python3 -m pip install -r requirements.txt
+```
 
-4. **下載模型檔案**
-   - YOLOv4-tiny 模型應放置在 `model/yolov4-tiny-baseball-416/` 目錄
-   - YOLOv8 模型應放置在 `yolov8/runs/baseball_yolov8n2/weights/` 目錄
+4. **準備模型權重**
+
+本專案**不一定包含**可直接使用的權重檔。有兩種做法：
+
+- **A：使用你已經有的權重（推薦）**
+  - YOLOv8：準備一個 `.pt` 權重檔，之後用參數 `-w/--weights` 指向它即可。
+- **B：自己訓練（需要時才做）**
+  - 參考下方「訓練自訂模型」。
+
+若你想沿用 README 的預設路徑：
+
+- **YOLOv8 權重**：放在 `yolov8/runs/baseball_yolov8n2/weights/best.pt`
+- **YOLOv4-tiny 模型**（只有選 YOLOv4 才需要）： `model/yolov4-tiny-baseball-416/`
+
+5. **快速驗證是否安裝成功**
+
+```bash
+python3 -c "import cv2, mediapipe, ultralytics, tensorflow as tf; print('OK')"
+```
 
 ## 使用方法
 
@@ -53,7 +80,7 @@
 執行圖形介面應用程式：
 
 ```bash
-python gui_app.py
+python3 gui_app.py
 ```
 
 操作步驟：
@@ -61,13 +88,13 @@ python gui_app.py
 1. 點擊「選擇影片」按鈕，選擇 1~2 支投球影片（支援 mp4/avi/mov/mkv 格式）
 2. 選擇 YOLO 版本（v4 或 v8）
 3. 點擊「開始分析」
-4. 分析完成後，會在影片同一個資料夾輸出 `Overlay.mp4`
+4. 分析完成後，會在影片同一個資料夾輸出 overlay 影片（YOLOv4：`Overlay.mp4`，YOLOv8：`Overlay_yolov8.mp4`）
 
 
 #### 使用 YOLOv4
 
 ```bash
-python pitching_overlay.py --video path/to/video.mp4 --output output.mp4
+python3 pitching_overlay.py --video path/to/video.mp4 --output output.mp4
 ```
 
 #### 使用 YOLOv8（推薦，支援球速測定）
@@ -75,7 +102,7 @@ python pitching_overlay.py --video path/to/video.mp4 --output output.mp4
 **基本使用（啟用球速測定，改用手動輸入距離）：**
 ```bash
 # 單一影片模式
-python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03
+python3 pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03
 
 # 預設距離為 18.44m（投手丘到本壘板）
 # 若要改距離，請加上 --distance（公尺）
@@ -83,17 +110,17 @@ python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03
 
 **指定投手到捕手距離（公尺）：**
 ```bash
-python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03 --distance 18.44
+python3 pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03 --distance 18.44
 ```
 
 **停用球速計算：**
 ```bash
-python pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03 --no-speed
+python3 pitching_overlay_yolov8.py -v path/to/video.mp4 --conf 0.03 --no-speed
 ```
 
 **處理資料夾內所有影片：**
 ```bash
-python pitching_overlay_yolov8.py -f videos/videos1 --conf 0.03
+python3 pitching_overlay_yolov8.py -f videos/videos1 --conf 0.03
 ```
 
 **參數：**
