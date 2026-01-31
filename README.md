@@ -91,6 +91,52 @@ python3 gui_app.py
 4. 分析完成後，會在影片同一個資料夾輸出 overlay 影片（YOLOv4：`Overlay.mp4`，YOLOv8：`Overlay_yolov8.mp4`）
 
 
+# Video Preprocessing
+
+This folder contains `preprocess_video.py` — a small helper that uses `ffmpeg` to:
+
+- Increase FPS to 120 (via interpolation or duplication)
+- Scale and pad to 1920x1080 (1080p) while preserving aspect ratio
+
+- Optionally target 4K (3840x2160) using `--resolution 4k`
+
+Prerequisites:
+
+- `ffmpeg` installed and available on `PATH`.
+
+Usage examples:
+
+Process a single file (interpolation) to 1080p:
+
+```
+python preprocess_video.py input.mp4
+```
+
+Process a single file to 4K:
+
+```
+python preprocess_video.py input.mp4 --resolution 4k
+```
+
+Force simple duplication instead of interpolation:
+
+```
+python preprocess_video.py input.mp4 --method duplicate
+```
+
+Process all supported files in a directory (output folder created):
+
+```
+python preprocess_video.py ./videos
+```
+
+Specify an output file or folder with `-o` / `--output`.
+
+Notes:
+
+- Interpolation (the default) produces smoother motion but takes more CPU/time.
+- The script encodes video with `libx264` (CRF 18 by default). Adjust `--crf` and `--preset` as needed.
+
 #### 使用 YOLOv4
 
 ```bash
