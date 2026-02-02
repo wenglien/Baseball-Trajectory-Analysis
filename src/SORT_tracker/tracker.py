@@ -87,8 +87,9 @@ class Tracker(object):
                         diff[0][0] * diff[0][0] + diff[1][0] * diff[1][0]
                     )
                     cost[i][j] = distance
-                except:
-                    pass
+                except Exception:
+                    # 若 prediction/detection 形狀不符或數值異常，避免把 cost 留成 0（會被誤判成最佳匹配）
+                    cost[i][j] = 1e9
 
         # Let's average the squared ERROR
         cost = (0.5) * cost

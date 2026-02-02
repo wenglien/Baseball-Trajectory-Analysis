@@ -1,6 +1,5 @@
 import numpy as np
 from typing import List, Tuple, Optional, Dict
-from collections import deque
 
 
 class ReleasePointDetector:
@@ -9,6 +8,7 @@ class ReleasePointDetector:
         self.fps = fps
         self.pose_history = []  # 儲存每一幀的 pose landmarks
         self.frame_count = 0
+        self._cached_throwing_wrist_idx: Optional[int] = None
         
     def add_frame(self, pose_landmarks, frame_width: int, frame_height: int) -> None:
         """
@@ -36,6 +36,68 @@ class ReleasePointDetector:
         
         self.pose_history.append(landmarks)
         self.frame_count += 1
+
+        # pose history 更新後，丟棄快取（避免資料增加造成快取過期）
+        self._cached_throwing_wrist_idx = None
+
+    def infer_throwing_hand(self) -> Optional[Dict[str, int]]:
+        """
+        推斷投球手（左/右）並回傳該手的關鍵點 index。
+
+        Returns:
+            dict: {'wrist': 15/16, 'index_finger': 19/20, 'elbow': 13/14, 'shoulder': 11/12}
+        """
+        wrist_idx = self._infer_throwing_wrist_idx()
+        if wrist_idx is None:
+            return None
+        if wrist_idx == 15:
+            return {"wrist": 15, "index_finger": 19, "elbow": 13, "shoulder": 11}
+        return {"wrist": 16, "index_finger": 20, "elbow": 14, "shoulder": 12}
+
+    def _infer_throwing_wrist_idx(self) -> Optional[int]:
+        """
+        以「可見度覆蓋率 + 高分位數腕速」推斷投球手，避免逐幀用可見度切換造成左右手跳動。
+        """
+        if self._cached_throwing_wrist_idx is not None:
+            return self._cached_throwing_wrist_idx
+
+        if len(self.pose_history) < 8:
+            return None
+
+        def build_series(wrist_idx: int) -> tuple[list[Tuple[float, float]], list[int], float]:
+            pts: list[Tuple[float, float]] = []
+            frame_ids: list[int] = []
+            for i, frame_data in enumerate(self.pose_history):
+                if frame_data is None:
+                    continue
+                w = frame_data.get(wrist_idx)
+                if not w:
+                    continue
+                if w.get("visibility", 1.0) < 0.35:
+                    continue
+                pts.append((float(w["x"]), float(w["y"])))
+                frame_ids.append(i)
+            visible_ratio = (len(frame_ids) / len(self.pose_history)) if self.pose_history else 0.0
+            return pts, frame_ids, float(visible_ratio)
+
+        def score_wrist(wrist_idx: int) -> float:
+            pts, frame_ids, visible_ratio = build_series(wrist_idx)
+            if len(pts) < 6:
+                return -1e9
+            vel_window = max(3, int(round(self.fps / 10)))
+            vels = self._calculate_velocity(pts, window=vel_window)
+            # 使用高分位數避免單幀雜訊峰值
+            peak = float(np.percentile(vels, 90)) if vels else 0.0
+            return peak * (0.5 + visible_ratio)
+
+        left_score = score_wrist(15)
+        right_score = score_wrist(16)
+
+        if left_score <= -1e8 and right_score <= -1e8:
+            return None
+
+        self._cached_throwing_wrist_idx = 15 if left_score >= right_score else 16
+        return self._cached_throwing_wrist_idx
     
     def _calculate_velocity(self, points: List[Tuple[float, float]], window: int = 3) -> List[float]:
         """
@@ -97,66 +159,58 @@ class ReleasePointDetector:
     
     def _detect_signal_s1_wrist_speed_peak(self) -> Optional[int]:
         """
-        訊號 S1：手腕速度峰值後的第一個減速點
-        
+        訊號 S1：手腕速度峰值附近（更接近真實放球瞬間）
+
+        以前版本用「峰值後的減速拐點」會系統性偏晚（尤其在高 FPS）。
+        這裡改為直接取速度峰值（並允許依 FPS 做輕微前移校正）。
+
         Returns:
             出球幀索引，如果找不到則返回 None
         """
         if len(self.pose_history) < 10:
             return None
-        
-        # 提取手腕位置（選擇可見度最高的手）
+
+        # 提取手腕位置（固定投球手，避免左右切換）
+        throwing = self.infer_throwing_hand()
+        if not throwing:
+            return None
+        wrist_idx = throwing["wrist"]
+
         wrist_points = []
         for frame_data in self.pose_history:
             if frame_data is None:
                 wrist_points.append(None)
                 continue
-            
-            # 選擇左右手腕中可見度較高的
-            left_wrist = frame_data.get(15)
-            right_wrist = frame_data.get(16)
-            
-            if left_wrist and right_wrist:
-                wrist = left_wrist if left_wrist['visibility'] > right_wrist['visibility'] else right_wrist
-            elif left_wrist:
-                wrist = left_wrist
-            elif right_wrist:
-                wrist = right_wrist
-            else:
+
+            wrist = frame_data.get(wrist_idx)
+            if not wrist or wrist.get("visibility", 1.0) < 0.35:
                 wrist_points.append(None)
                 continue
-            
-            wrist_points.append((wrist['x'], wrist['y']))
-        
+            wrist_points.append((float(wrist["x"]), float(wrist["y"])))
+
         # 過濾 None
         valid_indices = [i for i, p in enumerate(wrist_points) if p is not None]
         if len(valid_indices) < 10:
             return None
-        
+
         valid_points = [wrist_points[i] for i in valid_indices]
-        
-        # 計算速度
-        velocities = self._calculate_velocity(valid_points, window=3)
-        
+
+        # 計算速度（平滑窗口隨 FPS 縮放：30fps≈3, 60fps≈6, 120fps≈12）
+        vel_window = max(3, int(round(self.fps / 10)))
+        velocities = self._calculate_velocity(valid_points, window=vel_window)
+
         # 找速度峰值
-        peak_idx = np.argmax(velocities)
-        peak_value = velocities[peak_idx]
-        
-        # 在峰值後找第一個減速拐點（速度下降超過 20%）
-        threshold = peak_value * 0.8
-        for i in range(peak_idx + 1, len(velocities) - 2):
-            if velocities[i] < threshold:
-                # 檢查是否持續減速（連續 2-3 幀）
-                if i + 2 < len(velocities):
-                    if velocities[i+1] < velocities[i] and velocities[i+2] < velocities[i+1]:
-                        return valid_indices[i]
-        
-        # 如果沒找到明顯拐點，返回峰值後 2-3 幀
-        if peak_idx + 3 < len(valid_indices):
-            return valid_indices[peak_idx + 2]
-        
-        return None
-    
+        peak_local_idx = int(np.argmax(velocities))
+
+        # 高 FPS 下，真實放球通常更接近峰值或峰值前 0~2 幀
+        # 以「秒」表示的前移量，讓不同 FPS 表現一致
+        advance_sec = 0.008  # 8ms（120fps 約 -1 幀；60fps 約 -0~ -1 幀；30fps 約 0 幀）
+        offset = -int(round(advance_sec * self.fps))
+
+        chosen_local_idx = max(0, min(len(valid_indices) - 1, peak_local_idx + offset))
+        return int(valid_indices[chosen_local_idx])
+
+
     def _detect_signal_s2_elbow_extension(self) -> Optional[int]:
         """
         訊號 S2：肘關節伸直 + 手腕鞭打動作
@@ -167,7 +221,14 @@ class ReleasePointDetector:
         if len(self.pose_history) < 10:
             return None
         
-        # 提取肩-肘-腕的角度和手腕相對位置
+        # 提取肩-肘-腕的角度和手腕相對位置（固定投球手）
+        throwing = self.infer_throwing_hand()
+        if not throwing:
+            return None
+        shoulder_idx = throwing["shoulder"]
+        elbow_idx = throwing["elbow"]
+        wrist_idx = throwing["wrist"]
+
         elbow_angles = []
         wrist_velocities = []
         valid_indices = []
@@ -176,27 +237,16 @@ class ReleasePointDetector:
             if frame_data is None:
                 continue
             
-            # 選擇投球手（可見度較高的）
-            left_shoulder = frame_data.get(11)
-            right_shoulder = frame_data.get(12)
-            left_elbow = frame_data.get(13)
-            right_elbow = frame_data.get(14)
-            left_wrist = frame_data.get(15)
-            right_wrist = frame_data.get(16)
-            
-            # 判斷投球手（通常是舉高的那隻手）
-            if left_shoulder and left_elbow and left_wrist:
-                if right_shoulder and right_elbow and right_wrist:
-                    # 選擇 Y 座標較小（較高）的手
-                    if left_wrist['y'] < right_wrist['y']:
-                        shoulder, elbow, wrist = left_shoulder, left_elbow, left_wrist
-                    else:
-                        shoulder, elbow, wrist = right_shoulder, right_elbow, right_wrist
-                else:
-                    shoulder, elbow, wrist = left_shoulder, left_elbow, left_wrist
-            elif right_shoulder and right_elbow and right_wrist:
-                shoulder, elbow, wrist = right_shoulder, right_elbow, right_wrist
-            else:
+            shoulder = frame_data.get(shoulder_idx)
+            elbow = frame_data.get(elbow_idx)
+            wrist = frame_data.get(wrist_idx)
+            if not shoulder or not elbow or not wrist:
+                continue
+            if min(
+                shoulder.get("visibility", 1.0),
+                elbow.get("visibility", 1.0),
+                wrist.get("visibility", 1.0),
+            ) < 0.35:
                 continue
             
             # 計算肘關節角度
@@ -243,9 +293,9 @@ class ReleasePointDetector:
         if len(self.pose_history) < 10:
             return None
         
-        # 提取前腳踝位置（選擇移動較多的腳）
-        ankle_points = []
-        valid_indices = []
+        # 提取前腳踝位置：用「總位移較大」的腳當前腳，避免固定用左腳造成誤判
+        left_series: list[Tuple[int, Tuple[float, float]]] = []
+        right_series: list[Tuple[int, Tuple[float, float]]] = []
         
         for i, frame_data in enumerate(self.pose_history):
             if frame_data is None:
@@ -253,23 +303,29 @@ class ReleasePointDetector:
             
             left_ankle = frame_data.get(27)
             right_ankle = frame_data.get(28)
-            
-            if left_ankle and right_ankle:
-                # 選擇移動較多的腳（前腳）
-                ankle = left_ankle  # 簡化：先用左腳
-            elif left_ankle:
-                ankle = left_ankle
-            elif right_ankle:
-                ankle = right_ankle
-            else:
-                continue
-            
-            ankle_points.append((ankle['x'], ankle['y']))
-            valid_indices.append(i)
-        
-        if len(ankle_points) < 10:
+
+            if left_ankle and left_ankle.get("visibility", 1.0) >= 0.35:
+                left_series.append((i, (float(left_ankle["x"]), float(left_ankle["y"]))))
+            if right_ankle and right_ankle.get("visibility", 1.0) >= 0.35:
+                right_series.append((i, (float(right_ankle["x"]), float(right_ankle["y"]))))
+
+        def total_displacement(series: list[Tuple[int, Tuple[float, float]]]) -> float:
+            if len(series) < 6:
+                return 0.0
+            pts = [p for _, p in series]
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            return float((max(xs) - min(xs)) + (max(ys) - min(ys)))
+
+        use_left = total_displacement(left_series) >= total_displacement(right_series)
+        series = left_series if use_left else right_series
+
+        if len(series) < 10:
             return None
-        
+
+        valid_indices = [fid for fid, _ in series]
+        ankle_points = [pt for _, pt in series]
+
         # 計算 Y 方向速度（垂直方向）
         y_positions = [p[1] for p in ankle_points]
         y_velocities = []
@@ -278,7 +334,7 @@ class ReleasePointDetector:
         
         # 找前腳落地：Y 方向速度突然接近 0 並持續
         foot_contact_idx = None
-        velocity_threshold = np.mean(y_velocities) * 0.3
+        velocity_threshold = np.mean(y_velocities) * 0.25
         
         for i in range(len(y_velocities) - 3):
             # 連續 3 幀速度都很小
@@ -289,9 +345,11 @@ class ReleasePointDetector:
                 break
         
         if foot_contact_idx is not None:
-            # 出球通常在落地後 3-20 幀
-            window_start = foot_contact_idx + 3
-            window_end = min(foot_contact_idx + 20, len(self.pose_history) - 1)
+            # 出球通常在落地後約 0.10s ~ 0.67s（用 FPS 換算成幀數，避免高 FPS 錯位）
+            start_delay_sec = 0.10
+            end_delay_sec = 0.67
+            window_start = foot_contact_idx + int(round(start_delay_sec * self.fps))
+            window_end = min(foot_contact_idx + int(round(end_delay_sec * self.fps)), len(self.pose_history) - 1)
             return (window_start, window_end)
         
         return None

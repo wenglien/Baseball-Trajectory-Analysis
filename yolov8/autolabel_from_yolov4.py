@@ -147,7 +147,7 @@ def main():
         f"影像輸出在：{IMAGES_TRAIN}\n"
         f"標註輸出在：{LABELS_TRAIN}\n"
         "你可以直接執行 `python3 yolov8/train_yolov8.py` 進行 YOLOv8 微調，\n"
-        "之後再用 pitching_overlay_yolov8.py 來產生含有球軌跡的 overlay。"
+        "之後再用 pitching_overlay.py 來產生含有球軌跡的 overlay。"
     )
 
 

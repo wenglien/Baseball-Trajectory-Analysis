@@ -5,14 +5,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import List
 
-import tensorflow as tf
-from tensorflow.python.saved_model import tag_constants
-
-from src.FrameInfo import FrameInfo
-from pitching_overlay import run_yolov4_pipeline
-from pitching_overlay_yolov8 import run_yolov8_pipeline
-
-
 class SpeedgunGUI:
     def __init__(self, root):
         self.root = root
@@ -21,12 +13,9 @@ class SpeedgunGUI:
         self.video_paths: List[str] = []
         self.status_text = tk.StringVar(value="請先選擇 1~2 支投球影片。")
 
-        self.infer = None
-
-        self.yolo_version = tk.StringVar(value="v4")
         self.yolov8_weights = tk.StringVar(
             value=os.path.join(
-                "yolov8", "runs", "baseball_yolov8n2", "weights", "best.pt"
+                "yolov8", "runs", "baseball_yolo11n", "weights", "best.pt"
             )
         )
         self.yolov8_conf = tk.DoubleVar(value=0.1)
@@ -51,18 +40,12 @@ class SpeedgunGUI:
         frame_yolo = tk.Frame(self.root)
         frame_yolo.pack(fill="x", **padding)
 
-        tk.Label(frame_yolo, text="偵測引擎：").pack(side="left")
-        tk.Radiobutton(
-            frame_yolo, text="YOLOv4 (TF)", variable=self.yolo_version, value="v4"
-        ).pack(side="left")
-        tk.Radiobutton(
-            frame_yolo, text="YOLOv8 (PyTorch)", variable=self.yolo_version, value="v8"
-        ).pack(side="left", padx=(8, 0))
+        tk.Label(frame_yolo, text="偵測引擎：YOLO11（推薦/預設；亦相容 YOLOv8）").pack(side="left")
 
         frame_yolo8 = tk.Frame(self.root)
         frame_yolo8.pack(fill="x", **padding)
 
-        tk.Label(frame_yolo8, text="YOLOv8 weights:").pack(side="left")
+        tk.Label(frame_yolo8, text="YOLO weights:").pack(side="left")
         entry_weights = tk.Entry(frame_yolo8, textvariable=self.yolov8_weights)
         entry_weights.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
@@ -95,7 +78,7 @@ class SpeedgunGUI:
         info_text = (
             "說明：\n"
             "1. 按「選擇影片」挑一支投球影片（mp4/avi/mov/mkv）。\n"
-            "2. 按「開始分析」，程式會執行：YOLO 棒球偵測 + Mediapipe 姿勢 + overlay。\n"
+            "2. 按「開始分析」，程式會執行：Ultralytics YOLO（預設 YOLO11）棒球偵測 + Mediapipe 姿勢 + overlay。\n"
             "3. 球速會使用「投手到捕手距離（公尺）」做計算（不再需要點選校正）。\n"
             "4. 分析完成後，會在同一個資料夾輸出 Overlay.mp4。"
         )
@@ -122,42 +105,42 @@ class SpeedgunGUI:
             messagebox.showwarning("提示", "請先選擇至少一支影片（建議 1~2 支）。")
             return
 
-        t = threading.Thread(target=self._run_analysis, daemon=True)
+        # Tkinter 不是 thread-safe：UI 更新必須在主執行緒中進行
+        self._set_running(True)
+        t = threading.Thread(target=self._run_analysis_worker, daemon=True)
         t.start()
 
-    def _run_analysis(self):
+    def _ui(self, fn, *args, **kwargs):
+        self.root.after(0, lambda: fn(*args, **kwargs))
+
+    def _run_analysis_worker(self):
         try:
-            self._set_running(True)
             if len(self.video_paths) == 1:
                 base_dir = os.path.dirname(self.video_paths[0])
             else:
                 base_dir = os.path.dirname(self.video_paths[0])
 
-            yolo_ver = self.yolo_version.get()
-            if yolo_ver == "v4":
-                self.status_text.set("使用 YOLOv4 分析影片中，請稍候...")
-                output_path = os.path.join(base_dir, "Overlay.mp4")
-                run_yolov4_pipeline(self.video_paths, output_path, show_preview=False)
-            else:
-                self.status_text.set("使用 YOLOv8 分析影片中，請稍候...")
-                output_path = os.path.join(base_dir, "Overlay_yolov8.mp4")
-                run_yolov8_pipeline(
-                    self.video_paths,
-                    weights_path=self.yolov8_weights.get().strip(),
-                    conf=float(self.yolov8_conf.get()),
-                    output_path=output_path,
-                    show_preview=False,
-                    manual_distance_meters=float(self.pitch_distance_meters.get()),
-                )
+            self._ui(self.status_text.set, "使用 YOLO（預設 YOLO11）分析影片中，請稍候...")
+            output_path = os.path.join(base_dir, "Overlay.mp4")
+            from src.pipelines.yolov8_pipeline import run_yolov8_pipeline
 
-            self.status_text.set(f"完成！結果已輸出到：{output_path}")
-            messagebox.showinfo("完成", f"分析完成，輸出檔案：\n{output_path}")
+            run_yolov8_pipeline(
+                self.video_paths,
+                weights_path=self.yolov8_weights.get().strip(),
+                conf=float(self.yolov8_conf.get()),
+                output_path=output_path,
+                show_preview=False,
+                manual_distance_meters=float(self.pitch_distance_meters.get()),
+            )
+
+            self._ui(self.status_text.set, f"完成！結果已輸出到：{output_path}")
+            self._ui(messagebox.showinfo, "完成", f"分析完成，輸出檔案：\n{output_path}")
 
         except Exception as e:
-            self.status_text.set(f"發生錯誤：{e}")
-            messagebox.showerror("錯誤", str(e))
+            self._ui(self.status_text.set, f"發生錯誤：{e}")
+            self._ui(messagebox.showerror, "錯誤", str(e))
         finally:
-            self._set_running(False)
+            self._ui(self._set_running, False)
 
     def _set_running(self, running: bool):
         state = tk.DISABLED if running else tk.NORMAL
@@ -165,13 +148,6 @@ class SpeedgunGUI:
 
 
 def main():
-    try:
-        physical_devices = tf.config.experimental.list_physical_devices("GPU")
-        if len(physical_devices) > 0:
-            tf.config.experimental.set_memory_growth(physical_devices[0], True)
-    except Exception:
-        pass
-
     root = tk.Tk()
     app = SpeedgunGUI(root)
     root.mainloop()
