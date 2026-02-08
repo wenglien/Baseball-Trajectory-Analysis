@@ -617,20 +617,26 @@ def get_pitch_frames_yolov8(
             vy = p1[1] - p0[1]
             # 速度太小通常代表誤判或幾乎沒動，不做反推
             if (vx * vx + vy * vy) >= 4:
-                frames_back = 2.5  # 與 BallSpeedCalculator.calculate_release_speed 預設一致
+                # 用實際幀差回推；若無出手幀資訊則以 FPS 估計
+                if optimal_release_frame_idx is not None and first_ball_frame_idx is not None and first_ball_frame_idx > optimal_release_frame_idx:
+                    frames_back = float(first_ball_frame_idx - optimal_release_frame_idx)
+                else:
+                    frames_back = max(1.0, round(0.067 * fps, 1))
                 est_x = int(p0[0] - vx * frames_back)
                 est_y = int(p0[1] - vy * frames_back)
                 est_x = max(0, min(width - 1, est_x))
                 est_y = max(0, min(height - 1, est_y))
-                
+
                 # 只有在 release_point 不存在或明顯是退化值（與第一點相同）時才覆蓋
                 if release_point is None or release_point == p0:
                     release_point = (est_x, est_y)
-        
+
         if len(ball_trajectory) >= 2:
             speed_info = speed_calculator.calculate_speed_detailed(
                 ball_trajectory,
-                release_point=release_point
+                release_point=release_point,
+                release_frame_idx=optimal_release_frame_idx,
+                first_ball_frame_idx=first_ball_frame_idx,
             )
             
             # 添加 release_point 到 speed_info 以便在 overlay 中繪製
