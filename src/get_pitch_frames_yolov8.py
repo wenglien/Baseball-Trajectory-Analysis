@@ -177,8 +177,9 @@ def _filter_candidate_dets(
 
         filtered.append(det)
 
-    # 若過濾後全空，退回原始（避免在極端情況完全沒球）
-    return filtered if filtered else dets_with_cls
+    # 若過濾後全空，回傳空列表。
+    # 不要退回未過濾的原始 dets——那會把腳/地面假偵測全部加回來。
+    return filtered
 
 
 def _pick_best_track_id(
@@ -199,8 +200,8 @@ def _pick_best_track_id(
     best_score = -1e18
 
     for tid, items in tracks_by_id.items():
-        # 球在影片中可能只出現很短（尤其高 fps / 快門很高時），所以不要設太嚴格
-        if len(items) < 3:
+        # 至少 5 次偵測才算可靠 track（3 次太少，容易被假偵測混入）
+        if len(items) < 5:
             continue
 
         items_sorted = sorted(items, key=lambda x: x["frame_id"])
@@ -220,6 +221,22 @@ def _pick_best_track_id(
         x_end, y_end, _, _ = pts[-1]
         displacement = float(np.hypot(x_end - x_start, y_end - y_start))
         avg_area = float(np.mean([p[3] for p in pts]))
+
+        # 方向一致性：棒球軌跡應有明確的移動方向，不會反覆來回飄動
+        # 計算相鄰段之間的方向變化比例
+        direction_reversals = 0
+        if len(pts) >= 3:
+            for i in range(2, len(pts)):
+                dx_prev = pts[i - 1][0] - pts[i - 2][0]
+                dy_prev = pts[i - 1][1] - pts[i - 2][1]
+                dx_curr = pts[i][0] - pts[i - 1][0]
+                dy_curr = pts[i][1] - pts[i - 1][1]
+                dot = dx_prev * dx_curr + dy_prev * dy_curr
+                if dot < 0:
+                    direction_reversals += 1
+            reversal_frac = direction_reversals / (len(pts) - 2)
+        else:
+            reversal_frac = 0.0
 
         # 位置懲罰：底部/腳踝附近
         bottom_frac = float(np.mean([1.0 if p[1] > height * 0.9 else 0.0 for p in pts]))
@@ -246,6 +263,8 @@ def _pick_best_track_id(
         # 懲罰項
         score *= (1.0 - 0.6 * min(bottom_frac, 1.0))
         score *= (1.0 - 0.8 * min(ankle_frac, 1.0))
+        # 方向反覆的 track 很可能不是球（球是直線/拋物線，不會來回飄）
+        score *= (1.0 - 0.7 * min(reversal_frac, 1.0))
 
         if score > best_score:
             best_score = score
@@ -469,8 +488,9 @@ def get_pitch_frames_yolov8(
     print("Processing Phase 2: Applying release point detection")
 
     # 以 SORT 做多幀追蹤，避免單幀誤判（腳/地面）把軌跡拉走
-    # min_hits 用 1：讓短暫/斷續的球軌跡也能形成 track
-    sort_tracker = Sort(max_age=10, min_hits=1, iou_threshold=0.1)
+    # min_hits=3：至少偵測 3 次才形成 track（避免單幀假偵測產生假 track）
+    # iou_threshold=0.3：標準匹配門檻，太低會把不相關的偵測混在一起
+    sort_tracker = Sort(max_age=10, min_hits=3, iou_threshold=0.3)
     tracks_by_id: dict[int, list[dict]] = {}
     tracks_by_frame: dict[int, dict[int, tuple[int, int]]] = {}
 
@@ -555,15 +575,16 @@ def get_pitch_frames_yolov8(
                         pred = (int(last_point[0] + last_vel[0]), int(last_point[1] + last_vel[1]))
 
                     # 距離太離譜的直接不選（避免突然跳到腳）
-                    max_jump = width * 0.25
+                    # 10% 畫面寬度：棒球在一幀內的合理最大位移
+                    max_jump = width * 0.10
                     best = None
                     best_cost = 1e18
                     for cx, cy, conf in cand_centers:
                         dist = float(np.hypot(cx - pred[0], cy - pred[1]))
                         if dist > max_jump:
                             continue
-                        # cost: 距離為主，置信度為輔（越高越好）
-                        cost = dist - (conf * 50.0)
+                        # cost: 距離為主，置信度為輔（以 max_jump 正規化，避免尺度不匹配）
+                        cost = dist - (conf * max_jump * 0.3)
                         if cost < best_cost:
                             best_cost = cost
                             best = (cx, cy)
@@ -574,6 +595,20 @@ def get_pitch_frames_yolov8(
             continue
 
         centerX, centerY = point
+
+        # 速度合理性檢查：如果新速度方向和上一幀差太多（反向跳躍），丟棄此幀
+        if last_point is not None and last_vel is not None:
+            new_vx = centerX - last_point[0]
+            new_vy = centerY - last_point[1]
+            # 若上一幀速度夠大且新方向完全反向（內積 < 0），視為異常跳躍
+            old_speed_sq = last_vel[0] ** 2 + last_vel[1] ** 2
+            if old_speed_sq > 4:  # 上一幀有明顯移動
+                dot = new_vx * last_vel[0] + new_vy * last_vel[1]
+                new_speed_sq = new_vx ** 2 + new_vy ** 2
+                if dot < 0 and new_speed_sq > old_speed_sq * 4:
+                    # 方向反向且速度暴增——幾乎一定是跳到不相關的偵測
+                    pitch_frames.append(FrameInfo(frame_rgb, False))
+                    continue
 
         # 更新 fallback 的速度估計（即便走 track 模式也可以讓後續更穩）
         if last_point is not None:
