@@ -64,13 +64,15 @@ def _extract_release_point_from_pose(
     image_w: int,
     image_h: int,
     throwing_hand: Optional[dict],
+    first_ball_point: Optional[tuple[int, int]] = None,
 ) -> Optional[tuple[int, int]]:
     """
     從單幀 pose landmarks 擷取「出手點」(release point)。
 
     - 優先用投球手的食指指尖（較接近球離手位置）
     - 若指尖不可用，退回投球手手腕
-    - 若投球手未知，則在左右手中選可見度較高者
+    - 若投球手未知且有第一顆球位置，選離球最近的手指/手腕
+    - 若投球手未知且無球位置，選可見度最高者
     """
     if pose_landmarks is None:
         return None
@@ -85,6 +87,19 @@ def _extract_release_point_from_pose(
             return None
         return (int(lm.x * image_w), int(lm.y * image_h))
 
+    def get_xy_with_vis(idx: int, min_vis: float) -> Optional[tuple[tuple[int, int], float]]:
+        try:
+            lm = pose_landmarks.landmark[idx]
+        except Exception:
+            return None
+        vis = lm.visibility if hasattr(lm, "visibility") else 1.0
+        if vis < min_vis:
+            return None
+        return ((int(lm.x * image_w), int(lm.y * image_h)), vis)
+
+    def _dist_sq(a: tuple[int, int], b: tuple[int, int]) -> float:
+        return float((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+
     if throwing_hand:
         fp = get_xy(int(throwing_hand["index_finger"]), 0.5)
         if fp is not None:
@@ -94,25 +109,27 @@ def _extract_release_point_from_pose(
             return wp
         return None
 
-    # throwing hand unknown → pick best finger/wrist by visibility
-    finger_candidates = []
-    for idx in (19, 20):
-        p = get_xy(idx, 0.5)
-        if p is not None:
-            finger_candidates.append(p)
-    if finger_candidates:
-        # 若兩邊都有，取較高（y 較小）的那一點（投球手通常舉高）
-        return min(finger_candidates, key=lambda pt: pt[1])
+    # throwing hand unknown → 收集所有候選
+    candidates: list[tuple[tuple[int, int], float]] = []  # (point, visibility)
+    for idx in (19, 20):  # index fingers
+        r = get_xy_with_vis(idx, 0.5)
+        if r is not None:
+            candidates.append(r)
+    if not candidates:
+        for idx in (15, 16):  # wrists
+            r = get_xy_with_vis(idx, 0.35)
+            if r is not None:
+                candidates.append(r)
 
-    wrist_candidates = []
-    for idx in (15, 16):
-        p = get_xy(idx, 0.35)
-        if p is not None:
-            wrist_candidates.append(p)
-    if wrist_candidates:
-        return min(wrist_candidates, key=lambda pt: pt[1])
+    if not candidates:
+        return None
 
-    return None
+    if first_ball_point is not None:
+        # 選離第一顆球最近的（出手點應在球飛行路徑的起始端）
+        return min(candidates, key=lambda c: _dist_sq(c[0], first_ball_point))[0]
+
+    # 無球參考時，選可見度最高的（比盲選 y 最小更穩）
+    return max(candidates, key=lambda c: c[1])[0]
 
 
 def _filter_candidate_dets(
@@ -545,8 +562,17 @@ def get_pitch_frames_yolov8(
             and has_pose
         ):
             image_h, image_w, _ = frame_rgb.shape
+            # 用第一顆球的位置幫助選正確的手
+            _fbp = None
+            if _first_ball_frame_for_validation is not None:
+                for _rd in raw_detections:
+                    if _rd["frame_id"] == _first_ball_frame_for_validation and _rd["dets_list"]:
+                        _d = _rd["dets_list"][0]
+                        _fbp = (int((_d[0] + _d[2]) / 2), int((_d[1] + _d[3]) / 2))
+                        break
             rp = _extract_release_point_from_pose(
-                pose_landmarks, image_w=image_w, image_h=image_h, throwing_hand=throwing_hand
+                pose_landmarks, image_w=image_w, image_h=image_h,
+                throwing_hand=throwing_hand, first_ball_point=_fbp,
             )
             if rp is not None:
                 release_point = rp
@@ -623,7 +649,9 @@ def get_pitch_frames_yolov8(
             if has_pose:
                 image_h, image_w, _ = frame_rgb.shape
                 rp = _extract_release_point_from_pose(
-                    pose_landmarks, image_w=image_w, image_h=image_h, throwing_hand=throwing_hand
+                    pose_landmarks, image_w=image_w, image_h=image_h,
+                    throwing_hand=throwing_hand,
+                    first_ball_point=(centerX, centerY),
                 )
                 release_point = rp if rp is not None else (centerX, centerY)
             else:
@@ -643,6 +671,18 @@ def get_pitch_frames_yolov8(
             if frame.ball_in_frame
         ]
         
+        # 合理性檢查：release_point 不應離第一顆球太遠（>30% 畫面對角線）
+        # 如果太遠，代表 pose 抓錯位置（例如抓到頭頂），丟棄它
+        if release_point is not None and len(ball_trajectory) >= 1:
+            rp_dist = float(np.hypot(
+                release_point[0] - ball_trajectory[0][0],
+                release_point[1] - ball_trajectory[0][1],
+            ))
+            max_rp_dist = float(np.hypot(width, height)) * 0.30
+            if rp_dist > max_rp_dist:
+                print(f"警告：release point 離第一顆球太遠 ({rp_dist:.0f}px > {max_rp_dist:.0f}px)，丟棄")
+                release_point = None
+
         # 若 pose 不可靠導致出球點退化成「第一顆球的位置」，用軌跡前段反推一個較合理的出球點
         # （主要用於 overlay 標記，避免出球點落在打者腳邊或畫面中段）
         if len(ball_trajectory) >= 2:
