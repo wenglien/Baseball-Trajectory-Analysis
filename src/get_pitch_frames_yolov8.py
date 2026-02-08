@@ -194,8 +194,25 @@ def _filter_candidate_dets(
 
         filtered.append(det)
 
-    # 若過濾後全空，回傳空列表。
-    # 不要退回未過濾的原始 dets——那會把腳/地面假偵測全部加回來。
+    # 若過濾後全空，用較寬鬆的條件再過濾一次（只保留尺寸/長寬比合格的），
+    # 避免完全沒有候選導致軌跡斷掉，同時不把腳踝/底部的假偵測加回來。
+    if not filtered:
+        soft_filtered = []
+        for det in dets_with_cls:
+            x1, y1, x2, y2, conf, cls_id = det.tolist()
+            bw = max(0.0, x2 - x1)
+            bh = max(0.0, y2 - y1)
+            if bw < min_side or bh < min_side:
+                continue
+            area = bw * bh
+            if area <= 0 or area > max_area:
+                continue
+            aspect = (bw / (bh + 1e-6)) if bh > 0 else 999.0
+            aspect = max(aspect, 1.0 / (aspect + 1e-6))
+            if aspect > max_aspect:
+                continue
+            soft_filtered.append(det)
+        return soft_filtered
     return filtered
 
 
@@ -217,8 +234,8 @@ def _pick_best_track_id(
     best_score = -1e18
 
     for tid, items in tracks_by_id.items():
-        # 至少 5 次偵測才算可靠 track（3 次太少，容易被假偵測混入）
-        if len(items) < 5:
+        # 至少 3 次偵測才算有效 track
+        if len(items) < 3:
             continue
 
         items_sorted = sorted(items, key=lambda x: x["frame_id"])
@@ -505,9 +522,9 @@ def get_pitch_frames_yolov8(
     print("Processing Phase 2: Applying release point detection")
 
     # 以 SORT 做多幀追蹤，避免單幀誤判（腳/地面）把軌跡拉走
-    # min_hits=3：至少偵測 3 次才形成 track（避免單幀假偵測產生假 track）
-    # iou_threshold=0.3：標準匹配門檻，太低會把不相關的偵測混在一起
-    sort_tracker = Sort(max_age=10, min_hits=3, iou_threshold=0.3)
+    # min_hits=2：至少偵測 2 次才形成 track（過濾單幀雜訊但不遺漏短軌跡）
+    # iou_threshold=0.1：棒球很小（~15px），快速移動時 bbox 重疊極低，門檻要放鬆
+    sort_tracker = Sort(max_age=10, min_hits=2, iou_threshold=0.1)
     tracks_by_id: dict[int, list[dict]] = {}
     tracks_by_frame: dict[int, dict[int, tuple[int, int]]] = {}
 
@@ -601,8 +618,8 @@ def get_pitch_frames_yolov8(
                         pred = (int(last_point[0] + last_vel[0]), int(last_point[1] + last_vel[1]))
 
                     # 距離太離譜的直接不選（避免突然跳到腳）
-                    # 10% 畫面寬度：棒球在一幀內的合理最大位移
-                    max_jump = width * 0.10
+                    # 15% 畫面寬度：棒球在一幀內的合理最大位移
+                    max_jump = width * 0.15
                     best = None
                     best_cost = 1e18
                     for cx, cy, conf in cand_centers:
@@ -671,14 +688,14 @@ def get_pitch_frames_yolov8(
             if frame.ball_in_frame
         ]
         
-        # 合理性檢查：release_point 不應離第一顆球太遠（>30% 畫面對角線）
+        # 合理性檢查：release_point 不應離第一顆球太遠（>50% 畫面對角線）
         # 如果太遠，代表 pose 抓錯位置（例如抓到頭頂），丟棄它
         if release_point is not None and len(ball_trajectory) >= 1:
             rp_dist = float(np.hypot(
                 release_point[0] - ball_trajectory[0][0],
                 release_point[1] - ball_trajectory[0][1],
             ))
-            max_rp_dist = float(np.hypot(width, height)) * 0.30
+            max_rp_dist = float(np.hypot(width, height)) * 0.50
             if rp_dist > max_rp_dist:
                 print(f"警告：release point 離第一顆球太遠 ({rp_dist:.0f}px > {max_rp_dist:.0f}px)，丟棄")
                 release_point = None
