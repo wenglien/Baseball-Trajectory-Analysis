@@ -194,26 +194,8 @@ def _filter_candidate_dets(
 
         filtered.append(det)
 
-    # 若過濾後全空，用較寬鬆的條件再過濾一次（只保留尺寸/長寬比合格的），
-    # 避免完全沒有候選導致軌跡斷掉，同時不把腳踝/底部的假偵測加回來。
-    if not filtered:
-        soft_filtered = []
-        for det in dets_with_cls:
-            x1, y1, x2, y2, conf, cls_id = det.tolist()
-            bw = max(0.0, x2 - x1)
-            bh = max(0.0, y2 - y1)
-            if bw < min_side or bh < min_side:
-                continue
-            area = bw * bh
-            if area <= 0 or area > max_area:
-                continue
-            aspect = (bw / (bh + 1e-6)) if bh > 0 else 999.0
-            aspect = max(aspect, 1.0 / (aspect + 1e-6))
-            if aspect > max_aspect:
-                continue
-            soft_filtered.append(det)
-        return soft_filtered
-    return filtered
+    # 若過濾後全空，退回原始（避免在極端情況完全沒球）
+    return filtered if filtered else dets_with_cls
 
 
 def _pick_best_track_id(
@@ -256,22 +238,6 @@ def _pick_best_track_id(
         displacement = float(np.hypot(x_end - x_start, y_end - y_start))
         avg_area = float(np.mean([p[3] for p in pts]))
 
-        # 方向一致性：棒球軌跡應有明確的移動方向，不會反覆來回飄動
-        # 計算相鄰段之間的方向變化比例
-        direction_reversals = 0
-        if len(pts) >= 3:
-            for i in range(2, len(pts)):
-                dx_prev = pts[i - 1][0] - pts[i - 2][0]
-                dy_prev = pts[i - 1][1] - pts[i - 2][1]
-                dx_curr = pts[i][0] - pts[i - 1][0]
-                dy_curr = pts[i][1] - pts[i - 1][1]
-                dot = dx_prev * dx_curr + dy_prev * dy_curr
-                if dot < 0:
-                    direction_reversals += 1
-            reversal_frac = direction_reversals / (len(pts) - 2)
-        else:
-            reversal_frac = 0.0
-
         # 位置懲罰：底部/腳踝附近
         bottom_frac = float(np.mean([1.0 if p[1] > height * 0.9 else 0.0 for p in pts]))
 
@@ -297,8 +263,6 @@ def _pick_best_track_id(
         # 懲罰項
         score *= (1.0 - 0.6 * min(bottom_frac, 1.0))
         score *= (1.0 - 0.8 * min(ankle_frac, 1.0))
-        # 方向反覆的 track 很可能不是球（球是直線/拋物線，不會來回飄）
-        score *= (1.0 - 0.7 * min(reversal_frac, 1.0))
 
         if score > best_score:
             best_score = score
@@ -522,9 +486,8 @@ def get_pitch_frames_yolov8(
     print("Processing Phase 2: Applying release point detection")
 
     # 以 SORT 做多幀追蹤，避免單幀誤判（腳/地面）把軌跡拉走
-    # min_hits=2：至少偵測 2 次才形成 track（過濾單幀雜訊但不遺漏短軌跡）
-    # iou_threshold=0.1：棒球很小（~15px），快速移動時 bbox 重疊極低，門檻要放鬆
-    sort_tracker = Sort(max_age=10, min_hits=2, iou_threshold=0.1)
+    # min_hits 用 1：讓短暫/斷續的球軌跡也能形成 track
+    sort_tracker = Sort(max_age=10, min_hits=1, iou_threshold=0.1)
     tracks_by_id: dict[int, list[dict]] = {}
     tracks_by_frame: dict[int, dict[int, tuple[int, int]]] = {}
 
@@ -618,16 +581,15 @@ def get_pitch_frames_yolov8(
                         pred = (int(last_point[0] + last_vel[0]), int(last_point[1] + last_vel[1]))
 
                     # 距離太離譜的直接不選（避免突然跳到腳）
-                    # 15% 畫面寬度：棒球在一幀內的合理最大位移
-                    max_jump = width * 0.15
+                    max_jump = width * 0.25
                     best = None
                     best_cost = 1e18
                     for cx, cy, conf in cand_centers:
                         dist = float(np.hypot(cx - pred[0], cy - pred[1]))
                         if dist > max_jump:
                             continue
-                        # cost: 距離為主，置信度為輔（以 max_jump 正規化，避免尺度不匹配）
-                        cost = dist - (conf * max_jump * 0.3)
+                        # cost: 距離為主，置信度為輔（越高越好）
+                        cost = dist - (conf * 50.0)
                         if cost < best_cost:
                             best_cost = cost
                             best = (cx, cy)
@@ -638,20 +600,6 @@ def get_pitch_frames_yolov8(
             continue
 
         centerX, centerY = point
-
-        # 速度合理性檢查：如果新速度方向和上一幀差太多（反向跳躍），丟棄此幀
-        if last_point is not None and last_vel is not None:
-            new_vx = centerX - last_point[0]
-            new_vy = centerY - last_point[1]
-            # 若上一幀速度夠大且新方向完全反向（內積 < 0），視為異常跳躍
-            old_speed_sq = last_vel[0] ** 2 + last_vel[1] ** 2
-            if old_speed_sq > 4:  # 上一幀有明顯移動
-                dot = new_vx * last_vel[0] + new_vy * last_vel[1]
-                new_speed_sq = new_vx ** 2 + new_vy ** 2
-                if dot < 0 and new_speed_sq > old_speed_sq * 4:
-                    # 方向反向且速度暴增——幾乎一定是跳到不相關的偵測
-                    pitch_frames.append(FrameInfo(frame_rgb, False))
-                    continue
 
         # 更新 fallback 的速度估計（即便走 track 模式也可以讓後續更穩）
         if last_point is not None:
@@ -688,18 +636,6 @@ def get_pitch_frames_yolov8(
             if frame.ball_in_frame
         ]
         
-        # 合理性檢查：release_point 不應離第一顆球太遠（>50% 畫面對角線）
-        # 如果太遠，代表 pose 抓錯位置（例如抓到頭頂），丟棄它
-        if release_point is not None and len(ball_trajectory) >= 1:
-            rp_dist = float(np.hypot(
-                release_point[0] - ball_trajectory[0][0],
-                release_point[1] - ball_trajectory[0][1],
-            ))
-            max_rp_dist = float(np.hypot(width, height)) * 0.50
-            if rp_dist > max_rp_dist:
-                print(f"警告：release point 離第一顆球太遠 ({rp_dist:.0f}px > {max_rp_dist:.0f}px)，丟棄")
-                release_point = None
-
         # 若 pose 不可靠導致出球點退化成「第一顆球的位置」，用軌跡前段反推一個較合理的出球點
         # （主要用於 overlay 標記，避免出球點落在打者腳邊或畫面中段）
         if len(ball_trajectory) >= 2:
