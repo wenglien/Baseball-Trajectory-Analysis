@@ -65,15 +65,6 @@ def main() -> int:
             has_solutions = hasattr(mod, "solutions")
             print(f"   mediapipe.has_solutions: {has_solutions}")
 
-    print("\n== optional (legacy) ==")
-    tf_mod, tf_err = _try_import("tensorflow")
-    if tf_err is not None:
-        print("INFO tensorflow: 未安裝（只有使用 YOLOv4 legacy 或 CoreML 轉換才需要）")
-    else:
-        print(
-            f"OK tensorflow: version={getattr(tf_mod, '__version__', None)} file={getattr(tf_mod, '__file__', None)}"
-        )
-
     return 0
 
 

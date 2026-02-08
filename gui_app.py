@@ -15,10 +15,10 @@ class SpeedgunGUI:
 
         self.yolov8_weights = tk.StringVar(
             value=os.path.join(
-                "yolov8", "runs", "baseball_yolo11n", "weights", "best.pt"
+                "yolov8", "runs", "detect", "baseball_yolo11n", "weights", "best.pt"
             )
         )
-        self.yolov8_conf = tk.DoubleVar(value=0.1)
+        self.yolov8_conf = tk.DoubleVar(value=0.01)
         self.pitch_distance_meters = tk.DoubleVar(value=18.44)
 
         self._build_ui()
@@ -40,7 +40,7 @@ class SpeedgunGUI:
         frame_yolo = tk.Frame(self.root)
         frame_yolo.pack(fill="x", **padding)
 
-        tk.Label(frame_yolo, text="偵測引擎：YOLO11（推薦/預設；亦相容 YOLOv8）").pack(side="left")
+        tk.Label(frame_yolo, text="偵測引擎：YOLOv8（預設/高召回率模型）").pack(side="left")
 
         frame_yolo8 = tk.Frame(self.root)
         frame_yolo8.pack(fill="x", **padding)
@@ -78,7 +78,7 @@ class SpeedgunGUI:
         info_text = (
             "說明：\n"
             "1. 按「選擇影片」挑一支投球影片（mp4/avi/mov/mkv）。\n"
-            "2. 按「開始分析」，程式會執行：Ultralytics YOLO（預設 YOLO11）棒球偵測 + Mediapipe 姿勢 + overlay。\n"
+            "2. 按「開始分析」，程式會執行：YOLOv8 棒球偵測 + Mediapipe 姿勢 + overlay。\n"
             "3. 球速會使用「投手到捕手距離（公尺）」做計算（不再需要點選校正）。\n"
             "4. 分析完成後，會在同一個資料夾輸出 Overlay.mp4。"
         )
@@ -120,7 +120,7 @@ class SpeedgunGUI:
             else:
                 base_dir = os.path.dirname(self.video_paths[0])
 
-            self._ui(self.status_text.set, "使用 YOLO（預設 YOLO11）分析影片中，請稍候...")
+            self._ui(self.status_text.set, "使用 YOLOv8 分析影片中，請稍候...")
             output_path = os.path.join(base_dir, "Overlay.mp4")
             from src.pipelines.yolov8_pipeline import run_yolov8_pipeline
 
@@ -137,6 +137,9 @@ class SpeedgunGUI:
             self._ui(messagebox.showinfo, "完成", f"分析完成，輸出檔案：\n{output_path}")
 
         except Exception as e:
+            import traceback
+            error_msg = f"{e}\n\n{traceback.format_exc()}"
+            print(f"GUI 錯誤：{error_msg}")  # 輸出到終端
             self._ui(self.status_text.set, f"發生錯誤：{e}")
             self._ui(messagebox.showerror, "錯誤", str(e))
         finally:

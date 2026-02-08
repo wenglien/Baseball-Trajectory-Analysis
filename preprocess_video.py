@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Preprocess video(s) to 120 FPS and 1080p using ffmpeg.
 
 This script calls ffmpeg. It supports frame interpolation (smooth) or

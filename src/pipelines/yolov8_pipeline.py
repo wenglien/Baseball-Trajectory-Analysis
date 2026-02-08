@@ -13,7 +13,7 @@ def run_yolov8_pipeline(
     video_paths: list[str],
     weights_path: str,
     *,
-    conf: float = 0.1,
+    conf: float = 0.05,
     output_path: str,
     show_preview: bool = False,
     enable_speed_calculation: bool = True,

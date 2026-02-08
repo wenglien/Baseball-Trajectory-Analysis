@@ -47,13 +47,13 @@ model/yolov4-tiny-baseball-416/variables/
 *.pb
 *.h5
 *.ckpt
-*.pt
+# *.pt - 已納入版控以推送模型權重
 *.weights
 *.onnx
 *.mlmodel
 
-# Training outputs
-yolov8/runs/
+# Training outputs (yolov8/runs/ 已納入版控以保留訓練權重)
+# yolov8/runs/
 *.csv
 *.png
 *.jpg

@@ -67,15 +67,6 @@ def main() -> int:
         else:
             print(f" {name}")
 
-    print("\n== optional (legacy) ==")
-    ok_tf, tf_mod, tf_err = _try_import("tensorflow")
-    if not ok_tf:
-        print("INFO tensorflow: 未安裝（只有使用 YOLOv4 legacy / CoreML 轉換才需要）")
-    else:
-        print(
-            f"tensorflow: version={getattr(tf_mod, '__version__', None)} file={getattr(tf_mod, '__file__', None)}"
-        )
-
     print()
     if ok_all:
         print("Smoke test PASS")

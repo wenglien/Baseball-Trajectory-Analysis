@@ -12,6 +12,12 @@
   YOLO_MODEL=yolo11s.pt EPOCHS=100 IMGSZ=960 BATCH=8 python train_yolo11.py
   # 若要避免與既有 runs 名稱衝突，可自訂 RUN_NAME
   RUN_NAME=baseball_yolo11n_v2 python train_yolo11.py
+  # 訓練卡住時可強制用 CPU（避開 MPS 相容性問題）
+  DEVICE=cpu python train_yolo11.py
+  # CPU 下關閉 AMP、縮小 batch 可減少卡住機率
+  DEVICE=cpu BATCH=4 AMP=0 python train_yolo11.py
+  # CPU 下跳過驗證可避免卡在 Validating 階段
+  DEVICE=cpu VAL=0 python train_yolo11.py
 """
 
 from __future__ import annotations
@@ -27,6 +33,10 @@ DATA_CONFIG = ROOT / "yolov8" / "data_baseball.yaml"
 
 
 def get_device() -> str:
+    # 環境變數 DEVICE 可強制指定（例如 cpu 避免 MPS 卡住）
+    env_device = _env_str("DEVICE", "")
+    if env_device:
+        return env_device
     # 在 Apple Silicon 上優先使用 mps；其次 cuda；最後 cpu
     if torch.backends.mps.is_available():
         return "mps"
@@ -67,17 +77,30 @@ def main() -> None:
     print(f"Using device: {device}")
 
     model_name = _env_str("YOLO_MODEL", "yolo11n.pt")
-    epochs = _env_int("EPOCHS", 80)
-    imgsz = _env_int("IMGSZ", 640)
-    batch = _env_int("BATCH", 8)
+    # CPU 時預設較少 epoch、較小尺寸以縮短訓練時間
+    epochs_default = 40 if device == "cpu" else 80
+    imgsz_default = 480 if device == "cpu" else 640
+    epochs = _env_int("EPOCHS", epochs_default)
+    imgsz = _env_int("IMGSZ", imgsz_default)
+    # CPU 時預設較小 batch，減少卡住與記憶體壓力
+    batch_default = 4 if device == "cpu" else 8
+    batch = _env_int("BATCH", batch_default)
     exist_ok = _env_bool("EXIST_OK", default=False)
     resume = _env_bool("RESUME", default=False)
+    # CPU 時關閉 AMP，避免某些環境下卡住
+    amp = _env_bool("AMP", default=(device != "cpu"))
+    # CPU 時可關閉驗證，避免卡在每個 epoch 後的 Validating
+    do_val = _env_bool("VAL", default=(device != "cpu"))
+    if not do_val:
+        print("Validation disabled (VAL=0) — 跳過驗證以減少卡住。")
 
     # 以 YOLO11 預訓練權重為基礎做微調
     model = YOLO(model_name)
 
     run_name_default = f"baseball_{Path(model_name).stem}"
     run_name = _env_str("RUN_NAME", run_name_default)
+    # workers=0 避免 macOS / MPS 下 dataloader 卡住
+    workers = _env_int("WORKERS", 0)
     model.train(
         data=str(DATA_CONFIG),
         epochs=epochs,
@@ -86,9 +109,12 @@ def main() -> None:
         device=device,
         project=str(ROOT / "yolov8" / "runs"),
         name=run_name,
-        patience=15,
+        patience=10,
         exist_ok=exist_ok,
         resume=resume,
+        workers=workers,
+        amp=amp,
+        val=do_val,
     )
 
     print(

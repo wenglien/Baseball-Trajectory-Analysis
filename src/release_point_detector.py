@@ -42,7 +42,7 @@ class ReleasePointDetector:
 
     def infer_throwing_hand(self) -> Optional[Dict[str, int]]:
         """
-        推斷投球手（左/右）並回傳該手的關鍵點 index。
+        推斷投球手（左/右）並回傳該手的關鍵點index
 
         Returns:
             dict: {'wrist': 15/16, 'index_finger': 19/20, 'elbow': 13/14, 'shoulder': 11/12}
@@ -161,8 +161,7 @@ class ReleasePointDetector:
         """
         訊號 S1：手腕速度峰值附近（更接近真實放球瞬間）
 
-        以前版本用「峰值後的減速拐點」會系統性偏晚（尤其在高 FPS）。
-        這裡改為直接取速度峰值（並允許依 FPS 做輕微前移校正）。
+       直接取速度峰值（並允許依 FPS 做輕微前移校正
 
         Returns:
             出球幀索引，如果找不到則返回 None

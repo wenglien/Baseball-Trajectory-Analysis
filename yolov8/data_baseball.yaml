@@ -1,5 +1,5 @@
-path: ./yolov8/datasets/baseball
+path: /Users/wenglien/speedgun-mobile/yolov8/datasets/baseball
 train: images/train
-val: images/train
+val: images/val
 names:
   0: ball

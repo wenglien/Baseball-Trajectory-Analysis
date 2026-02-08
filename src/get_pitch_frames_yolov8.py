@@ -66,7 +66,7 @@ def _extract_release_point_from_pose(
     throwing_hand: Optional[dict],
 ) -> Optional[tuple[int, int]]:
     """
-    從單幀 pose landmarks 擷取「出手點」(release point)。
+    從單幀 pose landmarks 擷取release point
 
     - 優先用投球手的食指指尖（較接近球離手位置）
     - 若指尖不可用，退回投球手手腕
@@ -199,8 +199,8 @@ def _pick_best_track_id(
     best_score = -1e18
 
     for tid, items in tracks_by_id.items():
-        # 球在影片中可能只出現很短（尤其高 fps / 快門很高時），所以不要設太嚴格
-        if len(items) < 3:
+        # 球在影片中可能只出現很短（尤其高 fps / 快門很高時），至少 2 點即可形成軌跡
+        if len(items) < 2:
             continue
 
         items_sorted = sorted(items, key=lambda x: x["frame_id"])
@@ -262,8 +262,8 @@ def get_pitch_frames_yolov8(
     speed_calculator: Optional[BallSpeedCalculator] = None,
 ) -> tuple[list[FrameInfo], int, int, int, dict]:
     """
-    使用 YOLOv8 模型偵測棒球，配 Mediapipe Pose 追蹤，
-    輸出與原本 get_pitch_frames 類似的 pitch_frames 結構。
+    使用 YOLOv8 模型偵測球，配 Mediapipe Pose 追蹤，
+    輸出與原本 get_pitch_frames 類似的 pitch_frames
     
     Args:
         video_path: 影片檔案路徑
@@ -421,9 +421,8 @@ def get_pitch_frames_yolov8(
 
     print("Processing complete - Phase 1: Data collection")
     
-    # ===== 第二階段：執行多訊號檢測並生成軌跡 =====
+    # ===== 執行多訊號出球點檢測並生成軌跡 =====
     
-    # 執行多訊號出球點檢測
     optimal_release_frame_idx = None
     release_detection = None
     throwing_hand = release_detector.infer_throwing_hand()
@@ -436,9 +435,9 @@ def get_pitch_frames_yolov8(
             optimal_release_frame_idx = release_detection['frame_idx']
             
             print(f"\n{'='*60}")
-            print(f"多訊號出球點檢測結果")
+            print(f"出球點檢測結果")
             print(f"{'='*60}")
-            print(f"  檢測幀索引: {optimal_release_frame_idx}")
+            print(f"  檢測幀號: {optimal_release_frame_idx}")
             print(f"  準確度: {release_detection['confidence']:.2f}")
             
             signals = release_detection['signals']
@@ -493,6 +492,10 @@ def get_pitch_frames_yolov8(
     best_track_id = _pick_best_track_id(
         tracks_by_id, width=width, height=height, raw_detections=raw_detections
     )
+    if best_track_id is None and tracks_by_id:
+        print("提示：有偵測到追蹤片段但未選出球軌跡，可嘗試降低 --conf（例如 0.03）再跑一次。")
+    elif best_track_id is None and sum(1 for d in raw_detections if d.get("dets_list")) == 0:
+        print("提示：未偵測到球，請確認權重路徑與影片內容；可嘗試降低 --conf（例如 0.03）。")
 
     first_release_adjusted = False
     first_ball_frame_idx = None

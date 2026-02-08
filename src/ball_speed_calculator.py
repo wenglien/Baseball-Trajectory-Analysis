@@ -58,7 +58,7 @@ class BallSpeedCalculator:
         far_point: Tuple[int, int]
     ) -> None:
         """
-        計算透視校正因子
+        計算透視校正
         近處的物體移動相同距離，像素變化較大
         遠處的物體移動相同距離，像素變化較小
         """
@@ -67,7 +67,7 @@ class BallSpeedCalculator:
         
     def _apply_perspective_correction(self, point: Tuple[int, int]) -> float:
         """
-        根據點的 Y 座標應用透視校正因子
+        根據點的 Y 座標應用透視校正
         
         Returns:
             校正後的比例因子
@@ -102,7 +102,7 @@ class BallSpeedCalculator:
             frames_elapsed: 從出手到第一次偵測的估計幀數
             
         Returns:
-            出手球速（km/h），如果無法計算則返回 None
+            出手球速（km/h），無法計算則返回 None
         """
         if self.pixels_per_meter is None:
             return None
@@ -147,7 +147,7 @@ class BallSpeedCalculator:
             release_point: 出手點（投手手腕位置），可選
             
         Returns:
-            包含各種球速資訊的字典
+            包含各種球速資訊的
         """
         if len(trajectory_points) < 2:
             return {"error": "軌跡點數不足（至少需要 2 個點）"}
