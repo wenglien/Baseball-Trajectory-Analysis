@@ -58,7 +58,7 @@ class BallSpeedCalculator:
         far_point: Tuple[int, int]
     ) -> None:
         """
-        計算透視校正
+        計算透視校正因子
         近處的物體移動相同距離，像素變化較大
         遠處的物體移動相同距離，像素變化較小
         """
@@ -67,7 +67,7 @@ class BallSpeedCalculator:
         
     def _apply_perspective_correction(self, point: Tuple[int, int]) -> float:
         """
-        根據點的 Y 座標應用透視校正
+        根據點的 Y 座標應用透視校正因子
         
         Returns:
             校正後的比例因子
@@ -86,6 +86,27 @@ class BallSpeedCalculator:
         
         return correction_factor
     
+    def _estimate_frames_elapsed(
+        self,
+        release_frame_idx: Optional[int],
+        first_ball_frame_idx: Optional[int],
+    ) -> float:
+        """
+        計算出手到第一顆球偵測之間的實際幀差。
+
+        若兩個索引都有效，使用實際差值（下限 1 幀避免除以零）。
+        否則回退到基於 FPS 的預設估計：
+        - 30fps → ~2 幀,  60fps → ~4 幀,  120fps → ~8 幀
+        """
+        if (
+            release_frame_idx is not None
+            and first_ball_frame_idx is not None
+            and first_ball_frame_idx > release_frame_idx
+        ):
+            return float(max(1, first_ball_frame_idx - release_frame_idx))
+        # 回退：假設出手到首次偵測約 0.067 秒（≈2 幀 @30fps）
+        return max(1.0, round(0.067 * self.fps, 1))
+
     def calculate_release_speed(
         self,
         release_point: Tuple[int, int],
@@ -102,7 +123,7 @@ class BallSpeedCalculator:
             frames_elapsed: 從出手到第一次偵測的估計幀數
             
         Returns:
-            出手球速（km/h），無法計算則返回 None
+            出手球速（km/h），如果無法計算則返回 None
         """
         if self.pixels_per_meter is None:
             return None
@@ -135,19 +156,23 @@ class BallSpeedCalculator:
         return speed_kmh
     
     def calculate_speed_detailed(
-        self, 
+        self,
         trajectory_points: List[Tuple[int, int]],
-        release_point: Optional[Tuple[int, int]] = None
+        release_point: Optional[Tuple[int, int]] = None,
+        release_frame_idx: Optional[int] = None,
+        first_ball_frame_idx: Optional[int] = None
     ) -> Dict:
         """
         計算詳細的球速資訊
-        
+
         Args:
             trajectory_points: 球的軌跡點列表 [(x1, y1), (x2, y2), ...]
             release_point: 出手點（投手手腕位置），可選
-            
+            release_frame_idx: 出手幀索引（用於計算實際幀差），可選
+            first_ball_frame_idx: 第一個偵測到球的幀索引，可選
+
         Returns:
-            包含各種球速資訊的
+            包含各種球速資訊的字典
         """
         if len(trajectory_points) < 2:
             return {"error": "軌跡點數不足（至少需要 2 個點）"}
@@ -166,12 +191,27 @@ class BallSpeedCalculator:
             
             release_speed = None
             if self.pixels_per_meter is not None and release_point and len(trajectory_points) > 0:
+                fe = self._estimate_frames_elapsed(release_frame_idx, first_ball_frame_idx)
                 release_speed = self.calculate_release_speed(
-                    release_point, 
+                    release_point,
                     trajectory_points[0],
-                    frames_elapsed=2.5
+                    frames_elapsed=fe
                 )
-            
+
+            # Generate synthetic frame data for visualization if we only have theoretical
+            synthetic_details = []
+            current_speed = initial_speed
+            decay = 0.01  # Slight decay to mimic air resistance
+            for i in range(num_frames):
+                synthetic_details.append({
+                    'frame': i,
+                    'speed_kmh': current_speed,
+                    'speed_ms': current_speed / 3.6,
+                    'distance_m': avg_speed_ms * (1.0/self.fps),
+                    'correction_factor': 1.0
+                })
+                current_speed = max(0, current_speed - decay)
+
             return {
                 'release_speed_kmh': release_speed,
                 'initial_speed_kmh': initial_speed,
@@ -179,6 +219,7 @@ class BallSpeedCalculator:
                 'average_speed_kmh': avg_speed_kmh,
                 'total_distance_m': self.theoretical_distance,
                 'num_frames': num_frames,
+                'frame_details': synthetic_details,
                 'calculation_method': 'theoretical'
             }
         
@@ -217,10 +258,11 @@ class BallSpeedCalculator:
         
         release_speed = None
         if release_point and len(trajectory_points) > 0:
+            fe = self._estimate_frames_elapsed(release_frame_idx, first_ball_frame_idx)
             release_speed = self.calculate_release_speed(
-                release_point, 
+                release_point,
                 trajectory_points[0],
-                frames_elapsed=2.5
+                frames_elapsed=fe
             )
         
         initial_speeds = [s['speed_kmh'] for s in speeds[:min(5, len(speeds))]]

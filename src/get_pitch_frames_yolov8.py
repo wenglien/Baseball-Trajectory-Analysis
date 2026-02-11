@@ -64,13 +64,15 @@ def _extract_release_point_from_pose(
     image_w: int,
     image_h: int,
     throwing_hand: Optional[dict],
+    first_ball_point: Optional[tuple[int, int]] = None,
 ) -> Optional[tuple[int, int]]:
     """
-    從單幀 pose landmarks 擷取release point
+    從單幀 pose landmarks 擷取「出手點」(release point)。
 
     - 優先用投球手的食指指尖（較接近球離手位置）
     - 若指尖不可用，退回投球手手腕
-    - 若投球手未知，則在左右手中選可見度較高者
+    - 若投球手未知且有第一顆球位置，選離球最近的手指/手腕
+    - 若投球手未知且無球位置，選可見度最高者
     """
     if pose_landmarks is None:
         return None
@@ -85,6 +87,19 @@ def _extract_release_point_from_pose(
             return None
         return (int(lm.x * image_w), int(lm.y * image_h))
 
+    def get_xy_with_vis(idx: int, min_vis: float) -> Optional[tuple[tuple[int, int], float]]:
+        try:
+            lm = pose_landmarks.landmark[idx]
+        except Exception:
+            return None
+        vis = lm.visibility if hasattr(lm, "visibility") else 1.0
+        if vis < min_vis:
+            return None
+        return ((int(lm.x * image_w), int(lm.y * image_h)), vis)
+
+    def _dist_sq(a: tuple[int, int], b: tuple[int, int]) -> float:
+        return float((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+
     if throwing_hand:
         fp = get_xy(int(throwing_hand["index_finger"]), 0.5)
         if fp is not None:
@@ -94,25 +109,27 @@ def _extract_release_point_from_pose(
             return wp
         return None
 
-    # throwing hand unknown → pick best finger/wrist by visibility
-    finger_candidates = []
-    for idx in (19, 20):
-        p = get_xy(idx, 0.5)
-        if p is not None:
-            finger_candidates.append(p)
-    if finger_candidates:
-        # 若兩邊都有，取較高（y 較小）的那一點（投球手通常舉高）
-        return min(finger_candidates, key=lambda pt: pt[1])
+    # throwing hand unknown → 收集所有候選
+    candidates: list[tuple[tuple[int, int], float]] = []  # (point, visibility)
+    for idx in (19, 20):  # index fingers
+        r = get_xy_with_vis(idx, 0.5)
+        if r is not None:
+            candidates.append(r)
+    if not candidates:
+        for idx in (15, 16):  # wrists
+            r = get_xy_with_vis(idx, 0.35)
+            if r is not None:
+                candidates.append(r)
 
-    wrist_candidates = []
-    for idx in (15, 16):
-        p = get_xy(idx, 0.35)
-        if p is not None:
-            wrist_candidates.append(p)
-    if wrist_candidates:
-        return min(wrist_candidates, key=lambda pt: pt[1])
+    if not candidates:
+        return None
 
-    return None
+    if first_ball_point is not None:
+        # 選離第一顆球最近的（出手點應在球飛行路徑的起始端）
+        return min(candidates, key=lambda c: _dist_sq(c[0], first_ball_point))[0]
+
+    # 無球參考時，選可見度最高的（比盲選 y 最小更穩）
+    return max(candidates, key=lambda c: c[1])[0]
 
 
 def _filter_candidate_dets(
@@ -129,8 +146,9 @@ def _filter_candidate_dets(
     if not dets_with_cls:
         return []
 
-    max_area = float(width * height) * 0.01  # 1% 畫面面積，避免把人腳/身體當球
-    min_side = 3.0
+    max_area = float(width * height) * 0.005  # 0.5% 畫面面積（4K 下 ≈41,472px²，約 204x204px）
+    min_side = max(3.0, min(width, height) * 0.002)  # 最小邊至少佔畫面短邊 0.2%
+    max_single_side = min(width, height) * 0.05       # 單邊不超過畫面短邊 5%（4K: ~108px）
     max_aspect = 2.5  # 球應接近正方形，過扁長通常不是球
 
     ankle_pts = _extract_ankles(pose_landmarks, width, height)
@@ -146,6 +164,9 @@ def _filter_candidate_dets(
 
         bw = max(0.0, x2 - x1)
         bh = max(0.0, y2 - y1)
+        # 單邊太大的一定不是球（避免把身體部位當球）
+        if bw > max_single_side or bh > max_single_side:
+            continue
         if bw < min_side or bh < min_side:
             continue
 
@@ -177,8 +198,8 @@ def _filter_candidate_dets(
 
         filtered.append(det)
 
-    # 若過濾後全空，退回原始（避免在極端情況完全沒球）
-    return filtered if filtered else dets_with_cls
+    # 不退回原始偵測 — 如果全部被過濾表示這一幀確實沒有球
+    return filtered
 
 
 def _pick_best_track_id(
@@ -190,17 +211,24 @@ def _pick_best_track_id(
 ) -> Optional[int]:
     """
     從 SORT 產生的多條 track 中挑出最像「球」的那一條。
-    主要依據：長度、平均速度、總位移、bbox 面積偏小、少出現在腳踝/底部區域。
+    主要依據：總位移、平均速度、長度、bbox 面積偏小、少出現在腳踝/底部區域。
+    飛行中的球必須有顯著位移（≥畫面對角線 5%），靜止/緩慢物體會被排除。
     """
     if not tracks_by_id:
         return None
 
+    diag = float(np.hypot(width, height))
+    # 最小位移門檻：飛行中的球至少要移動畫面對角線的 2%
+    min_displacement = diag * 0.02
+
     best_id = None
     best_score = -1e18
 
+    print(f"\n  [Track 選擇] 共 {len(tracks_by_id)} 條 track，畫面 {width}x{height}，最小位移門檻={min_displacement:.0f}px")
+
     for tid, items in tracks_by_id.items():
-        # 球在影片中可能只出現很短（尤其高 fps / 快門很高時），至少 2 點即可形成軌跡
-        if len(items) < 2:
+        # 至少 3 次偵測才算有效 track
+        if len(items) < 3:
             continue
 
         items_sorted = sorted(items, key=lambda x: x["frame_id"])
@@ -239,17 +267,29 @@ def _pick_best_track_id(
                         ankle_hits += 1
         ankle_frac = (ankle_hits / ankle_total) if ankle_total > 0 else 0.0
 
-        # 基礎分數：偏好「長、快、位移大、框小」
-        # - foot/地面：通常框較大、速度低、位移小、靠底部/踝部 → 自然會被壓下去
-        score = (len(pts) ** 1.1) * (avg_speed + 1.0) * (displacement + 1.0) / ((avg_area + 1.0) ** 0.25)
+        # 位移不足的 track 直接跳過（靜止/微動物體不可能是飛行中的球）
+        if displacement < min_displacement:
+            print(f"    Track {tid}: pts={len(pts):3d}, disp={displacement:7.1f}px ({displacement/diag*100:.1f}%), speed={avg_speed:.1f} → 跳過（位移不足）")
+            continue
+
+        # 基礎分數：重度偏好「位移大、速度快」
+        # displacement 用平方加權，確保靜止物體即使幀數多也無法超過飛行球
+        score = (displacement ** 2.0) * (avg_speed + 1.0) * (len(pts) ** 0.5) / ((avg_area + 1.0) ** 0.25)
 
         # 懲罰項
         score *= (1.0 - 0.6 * min(bottom_frac, 1.0))
         score *= (1.0 - 0.8 * min(ankle_frac, 1.0))
 
+        print(f"    Track {tid}: pts={len(pts):3d}, disp={displacement:7.1f}px ({displacement/diag*100:.1f}%), speed={avg_speed:.1f}, score={score:.1f}")
+
         if score > best_score:
             best_score = score
             best_id = tid
+
+    if best_id is not None:
+        print(f"  → 選中 Track {best_id} (score={best_score:.1f})")
+    else:
+        print(f"  → 無符合條件的 track（所有 track 位移不足）")
 
     return best_id
 
@@ -262,8 +302,8 @@ def get_pitch_frames_yolov8(
     speed_calculator: Optional[BallSpeedCalculator] = None,
 ) -> tuple[list[FrameInfo], int, int, int, dict]:
     """
-    使用 YOLOv8 模型偵測球，配 Mediapipe Pose 追蹤，
-    輸出與原本 get_pitch_frames 類似的 pitch_frames
+    使用 YOLOv8 模型偵測棒球，配 Mediapipe Pose 追蹤，
+    輸出與原本 get_pitch_frames 類似的 pitch_frames 結構。
     
     Args:
         video_path: 影片檔案路徑
@@ -421,23 +461,33 @@ def get_pitch_frames_yolov8(
 
     print("Processing complete - Phase 1: Data collection")
     
-    # ===== 執行多訊號出球點檢測並生成軌跡 =====
+    # ===== 第二階段：執行多訊號檢測並生成軌跡 =====
     
+    # 執行多訊號出球點檢測
     optimal_release_frame_idx = None
     release_detection = None
     throwing_hand = release_detector.infer_throwing_hand()
     release_pose_frame_idx = None
-    
+
+    # 找出第一個有球偵測的幀，用於交叉驗證 release point
+    _first_ball_frame_for_validation = None
+    for _rd in raw_detections:
+        if _rd["dets_list"]:
+            _first_ball_frame_for_validation = _rd["frame_id"]
+            break
+
     if release_detector.frame_count >= 10:
-        release_detection = release_detector.detect_release_point()
+        release_detection = release_detector.detect_release_point(
+            first_ball_frame=_first_ball_frame_for_validation
+        )
         
         if release_detection and release_detection['confidence'] > 0.3:
             optimal_release_frame_idx = release_detection['frame_idx']
             
             print(f"\n{'='*60}")
-            print(f"出球點檢測結果")
+            print(f"多訊號出球點檢測結果")
             print(f"{'='*60}")
-            print(f"  檢測幀號: {optimal_release_frame_idx}")
+            print(f"  檢測幀索引: {optimal_release_frame_idx}")
             print(f"  準確度: {release_detection['confidence']:.2f}")
             
             signals = release_detection['signals']
@@ -492,10 +542,6 @@ def get_pitch_frames_yolov8(
     best_track_id = _pick_best_track_id(
         tracks_by_id, width=width, height=height, raw_detections=raw_detections
     )
-    if best_track_id is None and tracks_by_id:
-        print("提示：有偵測到追蹤片段但未選出球軌跡，可嘗試降低 --conf（例如 0.03）再跑一次。")
-    elif best_track_id is None and sum(1 for d in raw_detections if d.get("dets_list")) == 0:
-        print("提示：未偵測到球，請確認權重路徑與影片內容；可嘗試降低 --conf（例如 0.03）。")
 
     first_release_adjusted = False
     first_ball_frame_idx = None
@@ -519,8 +565,17 @@ def get_pitch_frames_yolov8(
             and has_pose
         ):
             image_h, image_w, _ = frame_rgb.shape
+            # 用第一顆球的位置幫助選正確的手
+            _fbp = None
+            if _first_ball_frame_for_validation is not None:
+                for _rd in raw_detections:
+                    if _rd["frame_id"] == _first_ball_frame_for_validation and _rd["dets_list"]:
+                        _d = _rd["dets_list"][0]
+                        _fbp = (int((_d[0] + _d[2]) / 2), int((_d[1] + _d[3]) / 2))
+                        break
             rp = _extract_release_point_from_pose(
-                pose_landmarks, image_w=image_w, image_h=image_h, throwing_hand=throwing_hand
+                pose_landmarks, image_w=image_w, image_h=image_h,
+                throwing_hand=throwing_hand, first_ball_point=_fbp,
             )
             if rp is not None:
                 release_point = rp
@@ -582,7 +637,9 @@ def get_pitch_frames_yolov8(
             if has_pose:
                 image_h, image_w, _ = frame_rgb.shape
                 rp = _extract_release_point_from_pose(
-                    pose_landmarks, image_w=image_w, image_h=image_h, throwing_hand=throwing_hand
+                    pose_landmarks, image_w=image_w, image_h=image_h,
+                    throwing_hand=throwing_hand,
+                    first_ball_point=(centerX, centerY),
                 )
                 release_point = rp if rp is not None else (centerX, centerY)
             else:
@@ -611,20 +668,26 @@ def get_pitch_frames_yolov8(
             vy = p1[1] - p0[1]
             # 速度太小通常代表誤判或幾乎沒動，不做反推
             if (vx * vx + vy * vy) >= 4:
-                frames_back = 2.5  # 與 BallSpeedCalculator.calculate_release_speed 預設一致
+                # 用實際幀差回推；若無出手幀資訊則以 FPS 估計
+                if optimal_release_frame_idx is not None and first_ball_frame_idx is not None and first_ball_frame_idx > optimal_release_frame_idx:
+                    frames_back = float(first_ball_frame_idx - optimal_release_frame_idx)
+                else:
+                    frames_back = max(1.0, round(0.067 * fps, 1))
                 est_x = int(p0[0] - vx * frames_back)
                 est_y = int(p0[1] - vy * frames_back)
                 est_x = max(0, min(width - 1, est_x))
                 est_y = max(0, min(height - 1, est_y))
-                
+
                 # 只有在 release_point 不存在或明顯是退化值（與第一點相同）時才覆蓋
                 if release_point is None or release_point == p0:
                     release_point = (est_x, est_y)
-        
+
         if len(ball_trajectory) >= 2:
             speed_info = speed_calculator.calculate_speed_detailed(
                 ball_trajectory,
-                release_point=release_point
+                release_point=release_point,
+                release_frame_idx=optimal_release_frame_idx,
+                first_ball_frame_idx=first_ball_frame_idx,
             )
             
             # 添加 release_point 到 speed_info 以便在 overlay 中繪製
@@ -677,4 +740,3 @@ def get_pitch_frames_yolov8(
     fill_lost_tracking(pitch_frames)
 
     return pitch_frames, width, height, fps, speed_info
-

@@ -107,7 +107,7 @@ def main() -> None:
         imgsz=imgsz,
         batch=batch,
         device=device,
-        project=str(ROOT / "yolov8" / "runs"),
+        project=str(ROOT / "yolov8" / "runs" / "detect"),
         name=run_name,
         patience=10,
         exist_ok=exist_ok,

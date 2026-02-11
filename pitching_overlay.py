@@ -19,9 +19,9 @@ def run_yolov8_overlay(
     output_path: str,
     *,
     weights_path: str = os.path.join(
-        "yolov8", "runs", "baseball_yolov8n2", "weights", "best.pt"
+        "yolov8", "best_baseball.pt"
     ),
-    conf: float = 0.01,
+    conf: float = 0.05,
     show_preview: bool = False,
     manual_distance_meters: Optional[float] = None,
     enable_speed_calculation: bool = True,
@@ -67,15 +67,15 @@ def _parse_cli_args():
         "--weights",
         dest="weights",
         help="Path to Ultralytics YOLO weights (.pt) (YOLO11/YOLOv8)",
-        default=os.path.join("yolov8", "runs", "baseball_yolov8n2", "weights", "best.pt"),
+        default=os.path.join("yolov8", "best_baseball.pt"),
     )
     optparser.add_option(
         "-c",
         "--conf",
         dest="conf",
         type="float",
-        help="YOLO confidence threshold (default: 0.01)",
-        default=0.01,
+        help="YOLO confidence threshold (default: 0.05)",
+        default=0.05,
     )
     optparser.add_option(
         "-d",

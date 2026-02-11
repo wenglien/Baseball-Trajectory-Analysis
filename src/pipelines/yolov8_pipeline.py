@@ -21,7 +21,7 @@ def run_yolov8_pipeline(
     manual_distance_meters: Optional[float] = None,
     debug: bool = False,
     logger: Optional[logging.Logger] = None,
-) -> None:
+) -> Optional[dict]:
     """
     Ultralytics YOLO（YOLO11/YOLOv8）推論 + Mediapipe Pose + overlay pipeline。
 
@@ -126,4 +126,6 @@ def run_yolov8_pipeline(
         log.warning(
             "沒有任何影片偵測到足夠的球軌跡，因此不會產生 Overlay 影片，避免輸出損壞或空白檔案。"
         )
+
+    return all_speed_info
 

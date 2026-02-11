@@ -1,10 +1,7 @@
 """
 使用 Ultralytics YOLOv8 對「棒球」做微調訓練。
 
-1. 先跑 prepare_dataset.py 抽幀。
-2. 用標註工具將球標成 YOLO 格式 (txt)，放在同路徑下：
-   - images/train/xxx.jpg 對應 labels/train/xxx.txt
-   - images/val/xxx.jpg   對應 labels/val/xxx.txt（可先全部放 train，再手動切一部分到 val）
+前置：先跑 batch_autolabel.py 對 videos/ 下影片做自動標註，產生 images/train、labels/train 與 val。
 """
 
 import os
