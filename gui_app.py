@@ -56,6 +56,15 @@ class SpeedgunApp(tk.Tk):
         self.result_data = {}
         self._cached_details = []  # Store frame_details for popup chart
 
+        # Video Playback State
+        self.is_playing = False
+        self.cap = None
+        self.video_total_frames = 0
+        self.video_fps = 30
+        self.current_frame_idx = 0
+        self.playback_speed = 1.0          # Multiplier: 0.25x ~ 2x
+        self._seeking = False              # True while user drags slider
+
         self._build_ui()
         
     def _setup_styles(self):
@@ -85,6 +94,11 @@ class SpeedgunApp(tk.Tk):
         
         # Inputs
         style.configure("TEntry", fieldbackground="#404040", foreground="white", insertcolor="white")
+
+        # Timeline Scale (slider)
+        style.configure("Timeline.Horizontal.TScale",
+                        background=self.colors["bg_panel"],
+                        troughcolor="#404040")
         
     def _build_ui(self):
         # 1. Top Bar (Logo + Title)
@@ -151,12 +165,55 @@ class SpeedgunApp(tk.Tk):
         self.video_canvas = tk.Canvas(video_panel, bg="black", highlightthickness=0)
         self.video_canvas.pack(fill="both", expand=True, padx=2, pady=2)
         
-        # Playback Controls
-        self.controls_frame = ttk.Frame(video_panel, style="Panel.TFrame")
-        self.controls_frame.pack(fill="x", pady=5)
-        
-        self.btn_play = ttk.Button(self.controls_frame, text="▶ PLAY VIDEO", command=self.play_video, state="disabled")
-        self.btn_play.pack(side="left", padx=5)
+        # --- Playback Controls ---
+        controls_wrapper = ttk.Frame(video_panel, style="Panel.TFrame")
+        controls_wrapper.pack(fill="x", pady=(3, 5), padx=5)
+
+        # Row 1: Timeline slider + time label
+        timeline_row = ttk.Frame(controls_wrapper, style="Panel.TFrame")
+        timeline_row.pack(fill="x")
+
+        self.timeline_var = tk.IntVar(value=0)
+        self.timeline_slider = ttk.Scale(
+            timeline_row, from_=0, to=100, orient="horizontal",
+            variable=self.timeline_var, style="Timeline.Horizontal.TScale",
+            command=self._on_timeline_change
+        )
+        self.timeline_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.timeline_slider.state(["disabled"])
+
+        self.lbl_time = ttk.Label(timeline_row, text="0:00 / 0:00",
+                                   style="MetricLabel.TLabel", width=14, anchor="e")
+        self.lbl_time.pack(side="right")
+
+        # Row 2: Buttons + speed selector
+        btn_row = ttk.Frame(controls_wrapper, style="Panel.TFrame")
+        btn_row.pack(fill="x", pady=(4, 0))
+
+        self.btn_prev_frame = ttk.Button(btn_row, text="⏮", width=3,
+                                          command=self._prev_frame, state="disabled")
+        self.btn_prev_frame.pack(side="left", padx=2)
+
+        self.btn_play = ttk.Button(btn_row, text="▶ PLAY",
+                                    command=self.play_video, state="disabled", width=10)
+        self.btn_play.pack(side="left", padx=2)
+
+        self.btn_next_frame = ttk.Button(btn_row, text="⏭", width=3,
+                                          command=self._next_frame, state="disabled")
+        self.btn_next_frame.pack(side="left", padx=2)
+
+        # Speed selector
+        ttk.Label(btn_row, text="Speed:", style="MetricLabel.TLabel").pack(side="left", padx=(15, 4))
+        self.speed_var = tk.StringVar(value="1.0x")
+        speed_combo = ttk.Combobox(btn_row, textvariable=self.speed_var, width=5,
+                                    values=["0.1x", "0.25x", "0.5x", "1.0x", "1.5x", "2.0x"],
+                                    state="readonly")
+        speed_combo.pack(side="left")
+        speed_combo.bind("<<ComboboxSelected>>", self._on_speed_change)
+
+        # Frame counter
+        self.lbl_frame_info = ttk.Label(btn_row, text="", style="MetricLabel.TLabel")
+        self.lbl_frame_info.pack(side="right", padx=5)
         
         # Metrics Panel (Right of top split)
         metrics_panel = ttk.Frame(top_split, width=350, style="Panel.TFrame", padding=20)
@@ -237,40 +294,134 @@ class SpeedgunApp(tk.Tk):
             self._update_video_canvas(frame)
         cap.release()
 
+    # ------------------------------------------------------------------
+    # Video Playback (timeline + speed control)
+    # ------------------------------------------------------------------
+    def _init_video_capture(self, path: str):
+        """Open a video file and read its metadata."""
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+        self.cap = cv2.VideoCapture(path)
+        self.video_total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.video_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
+        self.current_frame_idx = 0
+
+        # Update slider range
+        self.timeline_slider.config(to=max(1, self.video_total_frames - 1))
+        self.timeline_var.set(0)
+        self._update_time_label()
+
     def play_video(self):
         if not hasattr(self, 'current_output_path') or not self.current_output_path:
             return
-            
-        if getattr(self, 'is_playing', False):
+
+        if self.is_playing:
             # Pause
             self.is_playing = False
-            self.btn_play.config(text="▶ PLAY VIDEO")
+            self.btn_play.config(text="▶ PLAY")
             return
-            
-        # Start Playing
+
+        # If at end, rewind
+        if self.cap and self.current_frame_idx >= self.video_total_frames - 1:
+            self._seek_to_frame(0)
+
+        # Start / Resume
+        if not self.cap or not self.cap.isOpened():
+            self._init_video_capture(self.current_output_path)
+
         self.is_playing = True
         self.btn_play.config(text="⏸ PAUSE")
-        
-        self.cap = cv2.VideoCapture(self.current_output_path)
         self._video_loop()
-        
+
     def _video_loop(self):
-        if not getattr(self, 'is_playing', False):
+        if not self.is_playing:
             return
-            
-        if not hasattr(self, 'cap') or not self.cap.isOpened():
+        if not self.cap or not self.cap.isOpened():
             return
-            
+        if self._seeking:
+            # Wait for user to finish dragging
+            self.after(50, self._video_loop)
+            return
+
         ret, frame = self.cap.read()
         if ret:
+            self.current_frame_idx = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
             self._update_video_canvas(frame)
-            # Approx 30 FPS = 33ms
-            self.after(33, self._video_loop)
+
+            # Update slider / labels without triggering seek callback
+            self._seeking = True
+            self.timeline_var.set(self.current_frame_idx)
+            self._seeking = False
+            self._update_time_label()
+
+            # Schedule next frame based on playback speed
+            delay = max(1, int((1000.0 / self.video_fps) / self.playback_speed))
+            self.after(delay, self._video_loop)
         else:
             # End of video
             self.is_playing = False
             self.btn_play.config(text="↺ REPLAY")
-            self.cap.release()
+
+    def _seek_to_frame(self, frame_idx: int):
+        """Seek the video capture to a specific frame and display it."""
+        if not self.cap or not self.cap.isOpened():
+            return
+        frame_idx = max(0, min(frame_idx, self.video_total_frames - 1))
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = self.cap.read()
+        if ret:
+            self.current_frame_idx = frame_idx
+            self._update_video_canvas(frame)
+            self._update_time_label()
+
+    def _on_timeline_change(self, value):
+        """Called when user drags the timeline slider."""
+        if self._seeking:
+            return  # Ignore programmatic updates
+        frame = int(float(value))
+        was_playing = self.is_playing
+        if was_playing:
+            self.is_playing = False  # Pause during seek
+        self._seeking = True
+        self._seek_to_frame(frame)
+        self._seeking = False
+        if was_playing:
+            self.is_playing = True
+            self._video_loop()
+
+    def _on_speed_change(self, _event=None):
+        """Called when user changes the speed combobox."""
+        txt = self.speed_var.get().replace('x', '')
+        try:
+            self.playback_speed = float(txt)
+        except ValueError:
+            self.playback_speed = 1.0
+
+    def _prev_frame(self):
+        """Step back one frame."""
+        self.is_playing = False
+        self.btn_play.config(text="▶ PLAY")
+        target = max(0, self.current_frame_idx - 2)  # -2 because read() advances
+        self._seek_to_frame(target)
+        self.timeline_var.set(self.current_frame_idx)
+
+    def _next_frame(self):
+        """Step forward one frame."""
+        self.is_playing = False
+        self.btn_play.config(text="▶ PLAY")
+        self._seek_to_frame(self.current_frame_idx)  # read() will advance +1
+        self.timeline_var.set(self.current_frame_idx)
+
+    def _update_time_label(self):
+        """Update the time display and frame counter."""
+        cur_sec = self.current_frame_idx / self.video_fps if self.video_fps else 0
+        total_sec = self.video_total_frames / self.video_fps if self.video_fps else 0
+        cur_m, cur_s = divmod(int(cur_sec), 60)
+        tot_m, tot_s = divmod(int(total_sec), 60)
+        self.lbl_time.config(text=f"{cur_m}:{cur_s:02d} / {tot_m}:{tot_s:02d}")
+        self.lbl_frame_info.config(
+            text=f"Frame {self.current_frame_idx} / {self.video_total_frames}"
+        )
 
     def _update_video_canvas(self, frame):
         # Resize to fit canvas
@@ -374,10 +525,13 @@ class SpeedgunApp(tk.Tk):
         
         # Enable Playback
         self.current_output_path = output_path
-        self.btn_play.config(state="normal", text="▶ PLAY VIDEO")
-        
-        # Play the result video (first frame)
-        self._show_preview_frame(output_path)
+        self._init_video_capture(output_path)
+        self._seek_to_frame(0)  # Show first frame
+
+        self.btn_play.config(state="normal", text="▶ PLAY")
+        self.btn_prev_frame.config(state="normal")
+        self.btn_next_frame.config(state="normal")
+        self.timeline_slider.state(["!disabled"])
 
     def _render_velocity_charts(self, details: list):
         """Render a two-panel velocity breakdown that highlights speed changes."""
