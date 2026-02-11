@@ -193,24 +193,25 @@ class SpeedgunApp(tk.Tk):
         ttk.Label(val_row, text=unit, style="MetricLabel.TLabel", padding=(5, 0, 0, 5)).pack(side="left", anchor="sw")
 
     def _setup_charts(self, parent):
-        """Embed Matplotlib figure."""
-        self.fig, self.ax = plt.subplots(figsize=(8, 2), dpi=100)
+        """Embed Matplotlib figure with multi-panel velocity breakdown."""
+        self.fig, (self.ax_bar, self.ax_delta) = plt.subplots(
+            1, 2, figsize=(8, 2.5), dpi=100,
+            gridspec_kw={'width_ratios': [3, 2]}
+        )
         self.fig.patch.set_facecolor(self.colors["bg_panel"])
-        self.ax.set_facecolor(self.colors["bg_panel"])
-        
-        # Style axis
-        self.ax.tick_params(colors='white')
-        self.ax.xaxis.label.set_color('white')
-        self.ax.yaxis.label.set_color('white')
-        self.ax.spines['bottom'].set_color('#555555')
-        self.ax.spines['top'].set_color('#555555') 
-        self.ax.spines['left'].set_color('#555555')
-        self.ax.spines['right'].set_color('#555555')
-        
-        self.ax.set_title("Velocity Breakdown (Time vs Speed)", color='white', fontsize=10)
-        self.ax.set_xlabel("Frame", fontsize=8)
-        self.ax.set_ylabel("Speed (km/h)", fontsize=8)
-        
+        self.fig.subplots_adjust(left=0.08, right=0.95, bottom=0.18, top=0.85, wspace=0.35)
+
+        for ax in (self.ax_bar, self.ax_delta):
+            ax.set_facecolor(self.colors["bg_panel"])
+            ax.tick_params(colors='white', labelsize=7)
+            for spine in ax.spines.values():
+                spine.set_color('#555555')
+            ax.xaxis.label.set_color('white')
+            ax.yaxis.label.set_color('white')
+
+        self.ax_bar.set_title("Speed per Frame", color='white', fontsize=9, fontweight='bold')
+        self.ax_delta.set_title("Speed Change (Δ km/h)", color='white', fontsize=9, fontweight='bold')
+
         self.chart_canvas = FigureCanvasTkAgg(self.fig, master=parent)
         self.chart_canvas.draw()
         self.chart_canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -363,31 +364,7 @@ class SpeedgunApp(tk.Tk):
         # Update Chart
         details = data.get('frame_details', [])
         if details:
-            frames = [d['frame'] for d in details]
-            speeds = [d['speed_kmh'] for d in details]
-            
-            self.ax.clear()
-            self.ax.set_facecolor(self.colors["bg_panel"])
-            # We need to manually set the spine colors again after clearing
-            self.ax.spines['bottom'].set_color('#555555')
-            self.ax.spines['top'].set_color('#555555') 
-            self.ax.spines['left'].set_color('#555555')
-            self.ax.spines['right'].set_color('#555555')
-            self.ax.tick_params(colors='white')
-            self.ax.grid(True, color='#444444', linestyle='--')
-            
-            # Plot line
-            self.ax.plot(frames, speeds, color=self.colors["accent"], linewidth=2, marker='o', markersize=4)
-            self.ax.fill_between(frames, speeds, color=self.colors["accent"], alpha=0.1)
-            
-            self.ax.set_title("Velocity Breakdown", color='white')
-            # Reset labels color if lost
-            self.ax.xaxis.label.set_color('white')
-            self.ax.yaxis.label.set_color('white')
-            self.ax.set_xlabel("Frame Index", fontsize=8)
-            self.ax.set_ylabel("Speed (km/h)", fontsize=8)
-            
-            self.chart_canvas.draw()
+            self._render_velocity_charts(details)
             
         self.status_msg.set(f"Analysis Complete! Output: {os.path.basename(output_path)}")
         
@@ -397,6 +374,99 @@ class SpeedgunApp(tk.Tk):
         
         # Play the result video (first frame)
         self._show_preview_frame(output_path)
+
+    def _render_velocity_charts(self, details: list):
+        """Render a two-panel velocity breakdown that highlights speed changes."""
+        frames = [d['frame'] for d in details]
+        speeds = [d['speed_kmh'] for d in details]
+
+        # --- Left panel: color-coded bar chart (speed per frame) ---
+        ax = self.ax_bar
+        ax.clear()
+        ax.set_facecolor(self.colors["bg_panel"])
+        for spine in ax.spines.values():
+            spine.set_color('#555555')
+        ax.tick_params(colors='white', labelsize=7)
+
+        # Normalize speeds to [0,1] for colormap
+        s_min, s_max = min(speeds), max(speeds)
+        if s_max == s_min:
+            norm_speeds = [0.5] * len(speeds)
+        else:
+            norm_speeds = [(s - s_min) / (s_max - s_min) for s in speeds]
+
+        # Use a warm-to-cool colormap: high speed = red, low = blue
+        cmap = plt.cm.RdYlGn  # Red (low) -> Yellow (mid) -> Green (high)
+        bar_colors = [cmap(n) for n in norm_speeds]
+
+        bars = ax.bar(frames, speeds, color=bar_colors, width=0.8, edgecolor='none')
+
+        # Y-axis: zoom in to show differences clearly
+        speed_range = s_max - s_min
+        if speed_range < 1.0:
+            # Very small range — zoom in aggressively
+            pad = max(0.5, speed_range * 2)
+        else:
+            pad = speed_range * 0.3
+        ax.set_ylim(max(0, s_min - pad), s_max + pad)
+
+        # Add value labels on bars
+        for bar, spd in zip(bars, speeds):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                f'{spd:.1f}', ha='center', va='bottom',
+                color='white', fontsize=6, fontweight='bold'
+            )
+
+        ax.set_xlabel("Frame", fontsize=7, color='white')
+        ax.set_ylabel("Speed (km/h)", fontsize=7, color='white')
+        ax.set_title("Speed per Frame", color='white', fontsize=9, fontweight='bold')
+        ax.grid(True, axis='y', color='#444444', linestyle='--', alpha=0.5)
+
+        # --- Right panel: speed delta (change between consecutive frames) ---
+        ax2 = self.ax_delta
+        ax2.clear()
+        ax2.set_facecolor(self.colors["bg_panel"])
+        for spine in ax2.spines.values():
+            spine.set_color('#555555')
+        ax2.tick_params(colors='white', labelsize=7)
+
+        if len(speeds) > 1:
+            deltas = [speeds[i+1] - speeds[i] for i in range(len(speeds)-1)]
+            delta_frames = frames[1:]
+
+            # Color: green for acceleration, red for deceleration
+            delta_colors = ['#2ecc71' if d >= 0 else '#e74c3c' for d in deltas]
+            bars2 = ax2.bar(delta_frames, deltas, color=delta_colors, width=0.8, edgecolor='none')
+
+            # Add delta labels
+            for bar, d in zip(bars2, deltas):
+                y_pos = bar.get_height() if d >= 0 else bar.get_y()
+                va = 'bottom' if d >= 0 else 'top'
+                ax2.text(
+                    bar.get_x() + bar.get_width() / 2, y_pos,
+                    f'{d:+.2f}', ha='center', va=va,
+                    color='white', fontsize=6, fontweight='bold'
+                )
+
+            # Zero line
+            ax2.axhline(y=0, color='#888888', linewidth=0.8)
+
+            # Auto-scale with padding
+            d_abs_max = max(abs(d) for d in deltas) if deltas else 0.5
+            if d_abs_max < 0.1:
+                d_abs_max = 0.5
+            ax2.set_ylim(-d_abs_max * 1.5, d_abs_max * 1.5)
+        else:
+            ax2.text(0.5, 0.5, 'Not enough data', transform=ax2.transAxes,
+                     ha='center', va='center', color='#888888', fontsize=10)
+
+        ax2.set_xlabel("Frame", fontsize=7, color='white')
+        ax2.set_ylabel("Δ Speed (km/h)", fontsize=7, color='white')
+        ax2.set_title("Speed Change (Δ km/h)", color='white', fontsize=9, fontweight='bold')
+        ax2.grid(True, axis='y', color='#444444', linestyle='--', alpha=0.5)
+
+        self.chart_canvas.draw()
 
     def _reset_ui_state(self):
         self.pipeline_running = False
