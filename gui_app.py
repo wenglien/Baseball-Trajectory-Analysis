@@ -54,7 +54,8 @@ class SpeedgunApp(tk.Tk):
         
         # Analysis Results
         self.result_data = {}
-        
+        self._cached_details = []  # Store frame_details for popup chart
+
         self._build_ui()
         
     def _setup_styles(self):
@@ -215,6 +216,9 @@ class SpeedgunApp(tk.Tk):
         self.chart_canvas = FigureCanvasTkAgg(self.fig, master=parent)
         self.chart_canvas.draw()
         self.chart_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        # Click on chart area to open detailed popup
+        self.chart_canvas.get_tk_widget().bind("<Button-1>", lambda e: self._open_detail_chart())
 
     def select_video(self):
         path = filedialog.askopenfilename(filetypes=[("Video", "*.mp4 *.avi *.mov")])
@@ -377,6 +381,7 @@ class SpeedgunApp(tk.Tk):
 
     def _render_velocity_charts(self, details: list):
         """Render a two-panel velocity breakdown that highlights speed changes."""
+        self._cached_details = details  # Cache for popup
         frames = [d['frame'] for d in details]
         speeds = [d['speed_kmh'] for d in details]
 
@@ -467,6 +472,149 @@ class SpeedgunApp(tk.Tk):
         ax2.grid(True, axis='y', color='#444444', linestyle='--', alpha=0.5)
 
         self.chart_canvas.draw()
+
+    # ------------------------------------------------------------------
+    # Popup Detail Chart (click to open)
+    # ------------------------------------------------------------------
+    def _open_detail_chart(self):
+        """Open a large popup window with interactive line charts."""
+        if not self._cached_details:
+            return
+
+        details = self._cached_details
+        frames = [d['frame'] for d in details]
+        speeds = [d['speed_kmh'] for d in details]
+
+        # Create popup Toplevel window
+        popup = tk.Toplevel(self)
+        popup.title("Velocity Breakdown - Detail View")
+        popup.geometry("1000x700")
+        popup.configure(bg=self.colors["bg_dark"])
+        popup.grab_set()  # Modal
+
+        # Header
+        header = tk.Frame(popup, bg=self.colors["bg_dark"])
+        header.pack(fill="x", padx=20, pady=(15, 5))
+        tk.Label(
+            header, text="VELOCITY DETAIL VIEW",
+            font=("Segoe UI", 14, "bold"), bg=self.colors["bg_dark"], fg=self.colors["accent"]
+        ).pack(side="left")
+        tk.Label(
+            header, text="(click on data points for details)",
+            font=("Segoe UI", 9), bg=self.colors["bg_dark"], fg=self.colors["fg_subtext"]
+        ).pack(side="left", padx=10)
+
+        # --- Matplotlib figure: 2 rows ---
+        fig, (ax_top, ax_bot) = plt.subplots(
+            2, 1, figsize=(10, 6), dpi=100,
+            gridspec_kw={'height_ratios': [3, 2]}
+        )
+        fig.patch.set_facecolor(self.colors["bg_dark"])
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.93, bottom=0.08, hspace=0.35)
+
+        # ---- Top: Speed Line Chart (zoomed Y-axis) ----
+        ax_top.set_facecolor(self.colors["bg_panel"])
+        for spine in ax_top.spines.values():
+            spine.set_color('#555555')
+        ax_top.tick_params(colors='white', labelsize=8)
+
+        # Main line
+        ax_top.plot(frames, speeds, color=self.colors["accent"], linewidth=2.5,
+                    marker='o', markersize=5, markerfacecolor='white',
+                    markeredgecolor=self.colors["accent"], markeredgewidth=1.5,
+                    zorder=3, label='Speed')
+        ax_top.fill_between(frames, speeds, color=self.colors["accent"], alpha=0.08)
+
+        # Reference lines
+        avg_speed = np.mean(speeds)
+        ax_top.axhline(y=avg_speed, color=self.colors["warning"], linewidth=1,
+                       linestyle='--', alpha=0.7, label=f'Avg: {avg_speed:.1f} km/h')
+        ax_top.axhline(y=max(speeds), color=self.colors["success"], linewidth=1,
+                       linestyle=':', alpha=0.5, label=f'Max: {max(speeds):.1f} km/h')
+        ax_top.axhline(y=min(speeds), color=self.colors["danger"], linewidth=1,
+                       linestyle=':', alpha=0.5, label=f'Min: {min(speeds):.1f} km/h')
+
+        # Zoom Y-axis
+        s_min, s_max = min(speeds), max(speeds)
+        speed_range = s_max - s_min
+        pad = max(0.5, speed_range * 0.4) if speed_range < 2.0 else speed_range * 0.15
+        ax_top.set_ylim(s_min - pad, s_max + pad)
+
+        ax_top.set_title("Speed vs Frame (Zoomed)", color='white', fontsize=11, fontweight='bold')
+        ax_top.set_xlabel("Frame", fontsize=9, color='white')
+        ax_top.set_ylabel("Speed (km/h)", fontsize=9, color='white')
+        ax_top.grid(True, color='#444444', linestyle='--', alpha=0.4)
+        ax_top.legend(loc='upper right', fontsize=7, facecolor='#333333',
+                      edgecolor='#555555', labelcolor='white')
+
+        # ---- Bottom: Delta chart (bar + line overlay) ----
+        ax_bot.set_facecolor(self.colors["bg_panel"])
+        for spine in ax_bot.spines.values():
+            spine.set_color('#555555')
+        ax_bot.tick_params(colors='white', labelsize=8)
+
+        if len(speeds) > 1:
+            deltas = [speeds[i + 1] - speeds[i] for i in range(len(speeds) - 1)]
+            delta_frames = frames[1:]
+
+            delta_colors = [self.colors["success"] if d >= 0 else self.colors["danger"] for d in deltas]
+            ax_bot.bar(delta_frames, deltas, color=delta_colors, width=0.7, alpha=0.7, edgecolor='none')
+            ax_bot.plot(delta_frames, deltas, color='white', linewidth=1.2,
+                        marker='D', markersize=3, alpha=0.8)
+            ax_bot.axhline(y=0, color='#888888', linewidth=0.8)
+
+            d_abs_max = max(abs(d) for d in deltas) if deltas else 0.5
+            if d_abs_max < 0.1:
+                d_abs_max = 0.5
+            ax_bot.set_ylim(-d_abs_max * 1.8, d_abs_max * 1.8)
+
+        ax_bot.set_title("Frame-to-Frame Speed Change", color='white', fontsize=11, fontweight='bold')
+        ax_bot.set_xlabel("Frame", fontsize=9, color='white')
+        ax_bot.set_ylabel("Δ Speed (km/h)", fontsize=9, color='white')
+        ax_bot.grid(True, color='#444444', linestyle='--', alpha=0.4)
+
+        # --- Interactive annotation on hover/click ---
+        annot = ax_top.annotate(
+            "", xy=(0, 0), xytext=(15, 15), textcoords="offset points",
+            bbox=dict(boxstyle="round,pad=0.4", fc="#1e1e1e", ec=self.colors["accent"], lw=1.5),
+            color='white', fontsize=9, fontweight='bold', zorder=10
+        )
+        annot.set_visible(False)
+
+        def on_click(event):
+            if event.inaxes != ax_top:
+                annot.set_visible(False)
+                canvas.draw_idle()
+                return
+            # Find closest data point
+            x_click = event.xdata
+            if x_click is None:
+                return
+            idx = int(min(range(len(frames)), key=lambda i: abs(frames[i] - x_click)))
+            f, s = frames[idx], speeds[idx]
+            mph = s * 0.621371
+            delta_txt = ""
+            if idx > 0:
+                d = speeds[idx] - speeds[idx - 1]
+                delta_txt = f"\nΔ: {d:+.2f} km/h"
+            annot.xy = (f, s)
+            annot.set_text(f"Frame {f}\n{s:.2f} km/h\n{mph:.1f} mph{delta_txt}")
+            annot.set_visible(True)
+            canvas.draw_idle()
+
+        canvas = FigureCanvasTkAgg(fig, master=popup)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        canvas.mpl_connect("button_press_event", on_click)
+
+        # Close button
+        btn_close = tk.Button(
+            popup, text="CLOSE", font=("Segoe UI", 10, "bold"),
+            bg=self.colors["accent"], fg="white", bd=0, padx=20, pady=6,
+            activebackground=self.colors["accent_hover"], activeforeground="white",
+            command=lambda: (plt.close(fig), popup.destroy())
+        )
+        btn_close.pack(pady=(0, 15))
 
     def _reset_ui_state(self):
         self.pipeline_running = False
