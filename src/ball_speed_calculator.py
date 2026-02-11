@@ -1,286 +1,239 @@
+from __future__ import annotations
+
+import logging
 import numpy as np
 from typing import List, Tuple, Optional, Dict
 
+log = logging.getLogger(__name__)
+
+# ── Tunable Constants ──────────────────────────────────────────
+PERSPECTIVE_NEAR_FACTOR = 1.15   # Correction factor at near-y
+PERSPECTIVE_RANGE = 0.30         # Drop across the near→far range
+AIR_RESISTANCE_DECAY = 0.01     # Synthetic per-frame speed decay (km/h)
+INITIAL_SPEED_MULT = 1.10       # Theoretical initial-speed multiplier
+MAX_SPEED_MULT = 1.15           # Theoretical max-speed multiplier
+MAX_REASONABLE_SPEED_KMH = 250  # Sanity cap for release speed
+RELEASE_FALLBACK_SEC = 0.067    # Default release→first-detect interval
+MIN_PIXEL_DIST = 10             # Minimum pixel distance for release calc
+
 
 class BallSpeedCalculator:
+    """Compute ball speed from trajectory data with optional perspective correction."""
+
     def __init__(
-        self, 
+        self,
         fps: int,
         video_width: int,
         video_height: int,
         pixels_per_meter: Optional[float] = None,
-        theoretical_distance: Optional[float] = None
+        theoretical_distance: Optional[float] = None,
     ):
-        """
-        Args:
-            fps: 影片幀率
-            video_width: 影片寬度
-            video_height: 影片高度
-            pixels_per_meter: 每米多少像素（需要校正得出）
-            theoretical_distance: 理論距離（手動輸入時使用，例如 18.44m）
-        """
+        if fps <= 0:
+            raise ValueError(f"fps must be positive, got {fps}")
         self.fps = fps
         self.video_width = video_width
         self.video_height = video_height
         self.pixels_per_meter = pixels_per_meter
         self.perspective_matrix = None
-        self.near_y = None
-        self.far_y = None
+        self.near_y: Optional[int] = None
+        self.far_y: Optional[int] = None
         self.theoretical_distance = theoretical_distance
-        
+
+    # ── Calibration ────────────────────────────────────────────
+
     def calibrate_from_reference(
-        self, 
+        self,
         pitcher_mound_pixel: Tuple[int, int],
         home_plate_pixel: Tuple[int, int],
-        real_distance: float = 18.44
+        real_distance: float = 18.44,
     ) -> None:
-        """
-        使用已知的投手板到本壘板距離進行校正
-        
-        Args:
-            pitcher_mound_pixel: 投手板的像素座標 (x, y)
-            home_plate_pixel: 本壘板的像素座標 (x, y)
-            real_distance: 真實距離（米），標準棒球場為 18.44m
-        """
-        pixel_distance = np.sqrt(
-            (home_plate_pixel[0] - pitcher_mound_pixel[0])**2 + 
-            (home_plate_pixel[1] - pitcher_mound_pixel[1])**2
-        )
+        """Calibrate pixels_per_meter from two known reference points."""
+        pixel_distance = float(np.hypot(
+            home_plate_pixel[0] - pitcher_mound_pixel[0],
+            home_plate_pixel[1] - pitcher_mound_pixel[1],
+        ))
         self.pixels_per_meter = pixel_distance / real_distance
-        
         self._calculate_perspective_factors(pitcher_mound_pixel, home_plate_pixel)
-        
-        print(f"✓ 校正完成：每米 = {self.pixels_per_meter:.2f} 像素")
-        
+        log.info("Calibration done: %.2f px/m", self.pixels_per_meter)
+
     def _calculate_perspective_factors(
-        self,
-        near_point: Tuple[int, int],
-        far_point: Tuple[int, int]
+        self, near_point: Tuple[int, int], far_point: Tuple[int, int]
     ) -> None:
-        """
-        計算透視校正因子
-        近處的物體移動相同距離，像素變化較大
-        遠處的物體移動相同距離，像素變化較小
-        """
         self.near_y = min(near_point[1], far_point[1])
         self.far_y = max(near_point[1], far_point[1])
-        
+
     def _apply_perspective_correction(self, point: Tuple[int, int]) -> float:
-        """
-        根據點的 Y 座標應用透視校正因子
-        
-        Returns:
-            校正後的比例因子
-        """
-        if self.near_y is None or self.far_y is None:
+        """Return perspective correction factor based on Y-coordinate."""
+        if self.near_y is None or self.far_y is None or self.far_y == self.near_y:
             return 1.0
-        
-        y = point[1]
-        
-        if self.far_y == self.near_y:
-            return 1.0
-        
-        t = (y - self.near_y) / (self.far_y - self.near_y)
-        t = np.clip(t, 0, 1)
-        correction_factor = 1.15 - (0.3 * t)
-        
-        return correction_factor
-    
+        t = float(np.clip((point[1] - self.near_y) / (self.far_y - self.near_y), 0, 1))
+        return PERSPECTIVE_NEAR_FACTOR - (PERSPECTIVE_RANGE * t)
+
+    # ── Frame-elapsed estimation ───────────────────────────────
+
     def _estimate_frames_elapsed(
         self,
         release_frame_idx: Optional[int],
         first_ball_frame_idx: Optional[int],
     ) -> float:
-        """
-        計算出手到第一顆球偵測之間的實際幀差。
-
-        若兩個索引都有效，使用實際差值（下限 1 幀避免除以零）。
-        否則回退到基於 FPS 的預設估計：
-        - 30fps → ~2 幀,  60fps → ~4 幀,  120fps → ~8 幀
-        """
         if (
             release_frame_idx is not None
             and first_ball_frame_idx is not None
             and first_ball_frame_idx > release_frame_idx
         ):
             return float(max(1, first_ball_frame_idx - release_frame_idx))
-        # 回退：假設出手到首次偵測約 0.067 秒（≈2 幀 @30fps）
-        return max(1.0, round(0.067 * self.fps, 1))
+        return max(1.0, round(RELEASE_FALLBACK_SEC * self.fps, 1))
+
+    # ── Release speed ──────────────────────────────────────────
 
     def calculate_release_speed(
         self,
         release_point: Tuple[int, int],
         first_ball_point: Tuple[int, int],
-        frames_elapsed: float = 2.5
+        frames_elapsed: float = 2.5,
     ) -> Optional[float]:
-        """
-        計算出手球速（從投手手腕到第一個偵測點）
-        這是最準確的初速度測量
-        
-        Args:
-            release_point: 出手點（投手手腕位置）
-            first_ball_point: 第一個偵測到球的位置
-            frames_elapsed: 從出手到第一次偵測的估計幀數
-            
-        Returns:
-            出手球速（km/h），如果無法計算則返回 None
-        """
+        """Calculate release speed (km/h) from release point to first detection."""
         if self.pixels_per_meter is None:
             return None
-        
-        pixel_dist = np.sqrt(
-            (first_ball_point[0] - release_point[0])**2 + 
-            (first_ball_point[1] - release_point[1])**2
-        )
-        
-        if pixel_dist < 10:
+
+        pixel_dist = float(np.hypot(
+            first_ball_point[0] - release_point[0],
+            first_ball_point[1] - release_point[1],
+        ))
+
+        if pixel_dist < MIN_PIXEL_DIST or pixel_dist > self.video_width / 2:
             return None
-        
-        max_reasonable_pixel_dist = self.video_width / 2
-        if pixel_dist > max_reasonable_pixel_dist:
-            return None
-        
-        mid_point_y = (release_point[1] + first_ball_point[1]) / 2
-        correction = self._apply_perspective_correction((0, int(mid_point_y)))
-        
+
+        mid_y = int((release_point[1] + first_ball_point[1]) / 2)
+        correction = self._apply_perspective_correction((0, mid_y))
         real_dist = (pixel_dist / self.pixels_per_meter) * correction
-        
         time = frames_elapsed / self.fps
-        
-        speed_ms = real_dist / time
-        speed_kmh = speed_ms * 3.6
-        
-        if speed_kmh > 250:
+        speed_kmh = (real_dist / time) * 3.6
+
+        if speed_kmh > MAX_REASONABLE_SPEED_KMH:
+            log.warning("Release speed %.1f km/h exceeds cap, discarding", speed_kmh)
             return None
-        
         return speed_kmh
-    
+
+    # ── Detailed speed computation ─────────────────────────────
+
     def calculate_speed_detailed(
         self,
         trajectory_points: List[Tuple[int, int]],
         release_point: Optional[Tuple[int, int]] = None,
         release_frame_idx: Optional[int] = None,
-        first_ball_frame_idx: Optional[int] = None
+        first_ball_frame_idx: Optional[int] = None,
     ) -> Dict:
-        """
-        計算詳細的球速資訊
-
-        Args:
-            trajectory_points: 球的軌跡點列表 [(x1, y1), (x2, y2), ...]
-            release_point: 出手點（投手手腕位置），可選
-            release_frame_idx: 出手幀索引（用於計算實際幀差），可選
-            first_ball_frame_idx: 第一個偵測到球的幀索引，可選
-
-        Returns:
-            包含各種球速資訊的字典
-        """
+        """Return comprehensive speed breakdown dict."""
         if len(trajectory_points) < 2:
-            return {"error": "軌跡點數不足（至少需要 2 個點）"}
-        
+            return {"error": "Not enough trajectory points (need >= 2)"}
+
+        # ── Theoretical mode ───────────────────────────────────
         if self.theoretical_distance:
-            num_frames = len(trajectory_points)
-            if not self.fps:
-                return {"error": "fps 不可為 0，無法計算時間"}
-            total_time = num_frames / self.fps
-            
-            avg_speed_ms = self.theoretical_distance / total_time
-            avg_speed_kmh = avg_speed_ms * 3.6
-            
-            initial_speed = avg_speed_kmh * 1.1
-            max_speed = avg_speed_kmh * 1.15
-            
-            release_speed = None
-            if self.pixels_per_meter is not None and release_point and len(trajectory_points) > 0:
-                fe = self._estimate_frames_elapsed(release_frame_idx, first_ball_frame_idx)
-                release_speed = self.calculate_release_speed(
-                    release_point,
-                    trajectory_points[0],
-                    frames_elapsed=fe
-                )
-
-            # Generate synthetic frame data for visualization if we only have theoretical
-            synthetic_details = []
-            current_speed = initial_speed
-            decay = 0.01  # Slight decay to mimic air resistance
-            for i in range(num_frames):
-                synthetic_details.append({
-                    'frame': i,
-                    'speed_kmh': current_speed,
-                    'speed_ms': current_speed / 3.6,
-                    'distance_m': avg_speed_ms * (1.0/self.fps),
-                    'correction_factor': 1.0
-                })
-                current_speed = max(0, current_speed - decay)
-
-            return {
-                'release_speed_kmh': release_speed,
-                'initial_speed_kmh': initial_speed,
-                'max_speed_kmh': max_speed,
-                'average_speed_kmh': avg_speed_kmh,
-                'total_distance_m': self.theoretical_distance,
-                'num_frames': num_frames,
-                'frame_details': synthetic_details,
-                'calculation_method': 'theoretical'
-            }
-        
-        if self.pixels_per_meter is None:
-            return {
-                "error": "缺少距離資訊：請提供 theoretical_distance（手動輸入投手到捕手距離），或先執行 calibrate_from_reference 進行像素校正"
-            }
-        
-        speeds = []
-        time_interval = 1.0 / self.fps
-        
-        for i in range(len(trajectory_points) - 1):
-            p1 = trajectory_points[i]
-            p2 = trajectory_points[i + 1]
-            
-            pixel_dist = np.sqrt(
-                (p2[0] - p1[0])**2 + 
-                (p2[1] - p1[1])**2
+            return self._calculate_theoretical(
+                trajectory_points, release_point,
+                release_frame_idx, first_ball_frame_idx,
             )
-            
-            mid_y = (p1[1] + p2[1]) / 2
-            correction = self._apply_perspective_correction((0, int(mid_y)))
-            
-            real_dist = (pixel_dist / self.pixels_per_meter) * correction
-            
-            speed_ms = real_dist / time_interval
-            speed_kmh = speed_ms * 3.6
-            
-            speeds.append({
-                'frame': i,
-                'speed_kmh': speed_kmh,
-                'speed_ms': speed_ms,
-                'distance_m': real_dist,
-                'correction_factor': correction
-            })
-        
+
+        # ── Pixel-based mode ──────────────────────────────────
+        if self.pixels_per_meter is None:
+            return {"error": "Missing distance info: provide theoretical_distance or run calibrate_from_reference"}
+
+        return self._calculate_pixel_based(
+            trajectory_points, release_point,
+            release_frame_idx, first_ball_frame_idx,
+        )
+
+    # ── Private helpers ────────────────────────────────────────
+
+    def _calculate_theoretical(
+        self,
+        trajectory_points: List[Tuple[int, int]],
+        release_point: Optional[Tuple[int, int]],
+        release_frame_idx: Optional[int],
+        first_ball_frame_idx: Optional[int],
+    ) -> Dict:
+        num_frames = len(trajectory_points)
+        total_time = num_frames / self.fps
+        avg_speed_ms = self.theoretical_distance / total_time
+        avg_speed_kmh = avg_speed_ms * 3.6
+        initial_speed = avg_speed_kmh * INITIAL_SPEED_MULT
+        max_speed = avg_speed_kmh * MAX_SPEED_MULT
+
         release_speed = None
-        if release_point and len(trajectory_points) > 0:
+        if self.pixels_per_meter is not None and release_point and trajectory_points:
             fe = self._estimate_frames_elapsed(release_frame_idx, first_ball_frame_idx)
             release_speed = self.calculate_release_speed(
-                release_point,
-                trajectory_points[0],
-                frames_elapsed=fe
+                release_point, trajectory_points[0], frames_elapsed=fe
             )
-        
-        initial_speeds = [s['speed_kmh'] for s in speeds[:min(5, len(speeds))]]
-        initial_speed = np.mean(initial_speeds) if initial_speeds else 0
-        
-        max_speed = max([s['speed_kmh'] for s in speeds]) if speeds else 0
-        
-        avg_speed = np.mean([s['speed_kmh'] for s in speeds]) if speeds else 0
-        
-        calculated_distance = sum([s['distance_m'] for s in speeds])
-        
+
+        dist_per_frame = avg_speed_ms / self.fps
+        current_speed = initial_speed
+        synthetic_details = []
+        for i in range(num_frames):
+            synthetic_details.append({
+                'frame': i,
+                'speed_kmh': current_speed,
+                'speed_ms': current_speed / 3.6,
+                'distance_m': dist_per_frame,
+                'correction_factor': 1.0,
+            })
+            current_speed = max(0.0, current_speed - AIR_RESISTANCE_DECAY)
+
         return {
             'release_speed_kmh': release_speed,
             'initial_speed_kmh': initial_speed,
             'max_speed_kmh': max_speed,
-            'average_speed_kmh': avg_speed,
-            'total_distance_m': calculated_distance,
+            'average_speed_kmh': avg_speed_kmh,
+            'total_distance_m': self.theoretical_distance,
+            'num_frames': num_frames,
+            'frame_details': synthetic_details,
+            'calculation_method': 'theoretical',
+        }
+
+    def _calculate_pixel_based(
+        self,
+        trajectory_points: List[Tuple[int, int]],
+        release_point: Optional[Tuple[int, int]],
+        release_frame_idx: Optional[int],
+        first_ball_frame_idx: Optional[int],
+    ) -> Dict:
+        time_interval = 1.0 / self.fps
+        speeds = []
+
+        for i in range(len(trajectory_points) - 1):
+            p1, p2 = trajectory_points[i], trajectory_points[i + 1]
+            pixel_dist = float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
+            mid_y = int((p1[1] + p2[1]) / 2)
+            correction = self._apply_perspective_correction((0, mid_y))
+            real_dist = (pixel_dist / self.pixels_per_meter) * correction
+            speed_ms = real_dist / time_interval
+
+            speeds.append({
+                'frame': i,
+                'speed_kmh': speed_ms * 3.6,
+                'speed_ms': speed_ms,
+                'distance_m': real_dist,
+                'correction_factor': correction,
+            })
+
+        release_speed = None
+        if release_point and trajectory_points:
+            fe = self._estimate_frames_elapsed(release_frame_idx, first_ball_frame_idx)
+            release_speed = self.calculate_release_speed(
+                release_point, trajectory_points[0], frames_elapsed=fe
+            )
+
+        speed_values = [s['speed_kmh'] for s in speeds]
+        initial_speeds = speed_values[:min(5, len(speed_values))]
+
+        return {
+            'release_speed_kmh': release_speed,
+            'initial_speed_kmh': float(np.mean(initial_speeds)) if initial_speeds else 0,
+            'max_speed_kmh': max(speed_values) if speed_values else 0,
+            'average_speed_kmh': float(np.mean(speed_values)) if speed_values else 0,
+            'total_distance_m': sum(s['distance_m'] for s in speeds),
             'num_frames': len(trajectory_points),
             'frame_details': speeds,
-            'calculation_method': 'pixel_based'
+            'calculation_method': 'pixel_based',
         }

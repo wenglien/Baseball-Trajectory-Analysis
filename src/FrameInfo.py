@@ -1,14 +1,17 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Tuple
+
+import numpy as np
+
+
+@dataclass
 class FrameInfo:
-    def __init__(
-        self,
-        frame,
-        ball_in_frame,
-        ball=(0, 0),
-        ball_color=(0, 0, 0),
-        ball_lost_tracking=False,
-    ):
-        self.frame = frame
-        self.ball_in_frame = ball_in_frame
-        self.ball = ball
-        self.ball_color = ball_color
-        self.ball_lost_tracking = ball_lost_tracking
+    """Single frame data with optional ball detection info."""
+
+    frame: np.ndarray
+    ball_in_frame: bool
+    ball: Tuple[int, int] = (0, 0)
+    ball_color: Tuple[int, int, int] = (0, 0, 0)
+    ball_lost_tracking: bool = False

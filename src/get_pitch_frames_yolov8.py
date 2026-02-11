@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -10,8 +13,25 @@ from src.ball_speed_calculator import BallSpeedCalculator
 from src.release_point_detector import ReleasePointDetector
 from src.SORT_tracker.sort import Sort
 
+log = logging.getLogger(__name__)
+
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
+
+
+def _kmh_to_mph(kmh: float) -> Optional[float]:
+    """Convert km/h to mph."""
+    return kmh * 0.621371 if kmh else None
+
+
+# ── Detection filter constants ─────────────────────────────────
+MAX_AREA_RATIO = 0.005        # Max 0.5% of frame area
+MIN_SIDE_RATIO = 0.002        # Min side length ratio
+MAX_SIDE_RATIO = 0.05         # Max single side ratio
+MAX_ASPECT_RATIO = 2.5        # Ball should be roughly square
+BOTTOM_EXCLUDE_RATIO = 0.95   # Exclude bottom 5%
+ANKLE_RADIUS_RATIO = 0.03     # Ankle exclusion zone
+MIN_DISPLACEMENT_RATIO = 0.02 # Min displacement for valid track (% of diagonal)
 
 
 def _names_to_map(names) -> dict[int, str]:
@@ -146,13 +166,12 @@ def _filter_candidate_dets(
     if not dets_with_cls:
         return []
 
-    max_area = float(width * height) * 0.005  # 0.5% 畫面面積（4K 下 ≈41,472px²，約 204x204px）
-    min_side = max(3.0, min(width, height) * 0.002)  # 最小邊至少佔畫面短邊 0.2%
-    max_single_side = min(width, height) * 0.05       # 單邊不超過畫面短邊 5%（4K: ~108px）
-    max_aspect = 2.5  # 球應接近正方形，過扁長通常不是球
+    max_area = float(width * height) * MAX_AREA_RATIO
+    min_side = max(3.0, min(width, height) * MIN_SIDE_RATIO)
+    max_single_side = min(width, height) * MAX_SIDE_RATIO
 
     ankle_pts = _extract_ankles(pose_landmarks, width, height)
-    ankle_radius = max(20.0, min(width, height) * 0.03)
+    ankle_radius = max(20.0, min(width, height) * ANKLE_RADIUS_RATIO)
 
     filtered: list[np.ndarray] = []
     for det in dets_with_cls:
@@ -176,14 +195,13 @@ def _filter_candidate_dets(
 
         aspect = (bw / (bh + 1e-6)) if bh > 0 else 999.0
         aspect = max(aspect, 1.0 / (aspect + 1e-6))
-        if aspect > max_aspect:
+        if aspect > MAX_ASPECT_RATIO:
             continue
 
         cx = (x1 + x2) / 2.0
         cy = (y1 + y2) / 2.0
 
-        # 太靠近畫面最底部也常是誤判（腳、地面反光）；保守排除最底 5%
-        if cy > height * 0.95:
+        if cy > height * BOTTOM_EXCLUDE_RATIO:
             continue
 
         # 排除腳踝附近（常見誤判來源）
@@ -218,13 +236,12 @@ def _pick_best_track_id(
         return None
 
     diag = float(np.hypot(width, height))
-    # 最小位移門檻：飛行中的球至少要移動畫面對角線的 2%
-    min_displacement = diag * 0.02
+    min_displacement = diag * MIN_DISPLACEMENT_RATIO
 
     best_id = None
     best_score = -1e18
 
-    print(f"\n  [Track 選擇] 共 {len(tracks_by_id)} 條 track，畫面 {width}x{height}，最小位移門檻={min_displacement:.0f}px")
+    log.debug("Track selection: %d tracks, %dx%d, min_disp=%.0fpx", len(tracks_by_id), width, height, min_displacement)
 
     for tid, items in tracks_by_id.items():
         # 至少 3 次偵測才算有效 track
@@ -269,7 +286,7 @@ def _pick_best_track_id(
 
         # 位移不足的 track 直接跳過（靜止/微動物體不可能是飛行中的球）
         if displacement < min_displacement:
-            print(f"    Track {tid}: pts={len(pts):3d}, disp={displacement:7.1f}px ({displacement/diag*100:.1f}%), speed={avg_speed:.1f} → 跳過（位移不足）")
+            log.debug("  Track %d: pts=%d, disp=%.1fpx (%.1f%%), speed=%.1f -> skip (low displacement)", tid, len(pts), displacement, displacement/diag*100, avg_speed)
             continue
 
         # 基礎分數：重度偏好「位移大、速度快」
@@ -280,16 +297,16 @@ def _pick_best_track_id(
         score *= (1.0 - 0.6 * min(bottom_frac, 1.0))
         score *= (1.0 - 0.8 * min(ankle_frac, 1.0))
 
-        print(f"    Track {tid}: pts={len(pts):3d}, disp={displacement:7.1f}px ({displacement/diag*100:.1f}%), speed={avg_speed:.1f}, score={score:.1f}")
+        log.debug("  Track %d: pts=%d, disp=%.1fpx (%.1f%%), speed=%.1f, score=%.1f", tid, len(pts), displacement, displacement/diag*100, avg_speed, score)
 
         if score > best_score:
             best_score = score
             best_id = tid
 
     if best_id is not None:
-        print(f"  → 選中 Track {best_id} (score={best_score:.1f})")
+        log.info("Selected Track %d (score=%.1f)", best_id, best_score)
     else:
-        print(f"  → 無符合條件的 track（所有 track 位移不足）")
+        log.info("No valid track found (all below displacement threshold)")
 
     return best_id
 
@@ -320,7 +337,7 @@ def get_pitch_frames_yolov8(
             - fps: 影片幀率
             - speed_info: 球速資訊字典
     """
-    print("Video from: ", video_path)
+    log.info("Video from: %s", video_path)
     # Use OpenCV to read the video information (width, height, FPS), the actual frame is read by YOLOv8 later
     meta_cap = cv2.VideoCapture(video_path)
     if not meta_cap.isOpened():
@@ -339,7 +356,7 @@ def get_pitch_frames_yolov8(
         )
     if fps <= 0:
         fps = 30
-        print("警告：無法讀取 fps，使用預設值 30")
+        log.warning("Cannot read fps, using default 30")
 
     pitch_frames: list[FrameInfo] = []
     raw_detections: list = []  # 儲存原始偵測結果（尚未修正出球點）
@@ -459,7 +476,7 @@ def get_pitch_frames_yolov8(
             except Exception:
                 pass
 
-    print("Processing complete - Phase 1: Data collection")
+    log.info("Phase 1 complete: data collection (%d frames)", frame_id)
     
     # ===== 第二階段：執行多訊號檢測並生成軌跡 =====
     
@@ -484,17 +501,14 @@ def get_pitch_frames_yolov8(
         if release_detection and release_detection['confidence'] > 0.3:
             optimal_release_frame_idx = release_detection['frame_idx']
             
-            print(f"\n{'='*60}")
-            print(f"多訊號出球點檢測結果")
-            print(f"{'='*60}")
-            print(f"  檢測幀索引: {optimal_release_frame_idx}")
-            print(f"  準確度: {release_detection['confidence']:.2f}")
-            
             signals = release_detection['signals']
-            print(f"  訊號 S1 (手腕速度峰值): {signals['s1_wrist_speed']}")
-            print(f"  訊號 S2 (肘部伸展): {signals['s2_elbow_extension']}")
-            print(f"  訊號 S3 (前腳落地窗口): {signals['s3_foot_window']}")
-            print(f"{'='*60}\n")
+            log.info(
+                "Release point detected: frame=%d, confidence=%.2f, "
+                "S1(wrist)=%s, S2(elbow)=%s, S3(foot)=%s",
+                optimal_release_frame_idx, release_detection['confidence'],
+                signals['s1_wrist_speed'], signals['s2_elbow_extension'],
+                signals['s3_foot_window'],
+            )
 
     # 找到「最接近 optimal_release_frame_idx 且有 pose」的幀，
     # 讓出球點可以在「沒有球偵測」的出手幀也能被記錄（提升 release point 準確性）
@@ -506,7 +520,7 @@ def get_pitch_frames_yolov8(
                 break
     
     # 第二階段：使用檢測結果處理每一幀
-    print("Processing Phase 2: Applying release point detection")
+    log.info("Phase 2: Applying release point detection")
 
     # 以 SORT 做多幀追蹤，避免單幀誤判（腳/地面）把軌跡拉走
     # min_hits 用 1：讓短暫/斷續的球軌跡也能形成 track
@@ -580,7 +594,7 @@ def get_pitch_frames_yolov8(
             if rp is not None:
                 release_point = rp
                 first_release_adjusted = True
-                print(f"記錄出球點（pose 幀 {fid}）")
+                log.info("Release point recorded from pose frame %d", fid)
 
         point = None
         if best_track_id is not None:
@@ -645,7 +659,7 @@ def get_pitch_frames_yolov8(
             else:
                 release_point = (centerX, centerY)
             first_release_adjusted = True
-            print(f"使用第一個球偵測點作為出球點（幀 {fid}）")
+            log.info("Using first ball detection as release point (frame %d)", fid)
 
         color = (255, 255, 0)
         pitch_frames.append(FrameInfo(frame_rgb, True, (centerX, centerY), color))
@@ -694,47 +708,24 @@ def get_pitch_frames_yolov8(
             if release_point:
                 speed_info['release_point'] = release_point
             
-            # 顯示計算結果
+            # Log speed results
             if speed_info and not speed_info.get('error'):
-                calc_method = speed_info.get('calculation_method', 'unknown')
-                
-                # 轉換函數
-                def kmh_to_mph(kmh):
-                    return kmh * 0.621371 if kmh else None
-                
-                print(f"\n{'='*60}")
-                print(f"球速測定結果")
-                if calc_method == 'theoretical':
-                    print(f"（基於輸入距離計算）")
-                print(f"{'='*60}")
-                
-                if speed_info.get('release_speed_kmh'):
-                    kmh = speed_info['release_speed_kmh']
-                    mph = kmh_to_mph(kmh)
-                    print(f"  出手球速: {kmh:.1f} km/h ({mph:.1f} mph)")
-                
-                if speed_info.get('initial_speed_kmh'):
-                    kmh = speed_info['initial_speed_kmh']
-                    mph = kmh_to_mph(kmh)
-                    print(f"  初速度:   {kmh:.1f} km/h ({mph:.1f} mph)")
-                
-                if speed_info.get('max_speed_kmh'):
-                    kmh = speed_info['max_speed_kmh']
-                    mph = kmh_to_mph(kmh)
-                    print(f"  最大速度: {kmh:.1f} km/h ({mph:.1f} mph)")
-                
-                if speed_info.get('average_speed_kmh'):
-                    kmh = speed_info['average_speed_kmh']
-                    mph = kmh_to_mph(kmh)
-                    print(f"  平均速度: {kmh:.1f} km/h ({mph:.1f} mph)")
-                
+                method = speed_info.get('calculation_method', 'unknown')
+                parts = [f"method={method}"]
+                for key, label in [
+                    ('release_speed_kmh', 'release'),
+                    ('initial_speed_kmh', 'initial'),
+                    ('max_speed_kmh', 'max'),
+                    ('average_speed_kmh', 'avg'),
+                ]:
+                    kmh = speed_info.get(key)
+                    if kmh:
+                        parts.append(f"{label}={kmh:.1f}km/h({_kmh_to_mph(kmh):.1f}mph)")
                 if speed_info.get('total_distance_m'):
-                    print(f"  飛行距離: {speed_info['total_distance_m']:.2f} m")
-                
+                    parts.append(f"dist={speed_info['total_distance_m']:.2f}m")
                 if speed_info.get('num_frames'):
-                    print(f"  追蹤幀數: {speed_info['num_frames']} frames")
-                
-                print(f"{'='*60}\n")
+                    parts.append(f"frames={speed_info['num_frames']}")
+                log.info("Speed results: %s", ", ".join(parts))
 
     # 補齊少量漏追蹤，讓軌跡更順（若點數不足則函式會直接略過）
     fill_lost_tracking(pitch_frames)

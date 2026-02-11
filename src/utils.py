@@ -7,118 +7,110 @@ from src.FrameInfo import FrameInfo
 def draw_ball_curve(
     frame: np.ndarray, trajectory: list, max_points: int | None = 15
 ) -> np.ndarray:
+    """Draw the ball trajectory curve on a frame with transparency."""
+    if not trajectory:
+        return frame
+
     trajectory_weight = 0.5
     temp_frame = frame.copy()
 
-    if len(trajectory):
-        # Only take the last max_points points, so that the trajectory length is fixed in a small "tail"
-        if max_points is not None and len(trajectory) > max_points:
-            traj = trajectory[-max_points:]
-        else:
-            traj = trajectory
+    # Only take the last max_points points for a fixed-length tail
+    traj = trajectory[-max_points:] if max_points is not None and len(trajectory) > max_points else trajectory
 
-        ball_points = copy.deepcopy(traj)
-        for point in ball_points:
-            color = point[2]
-            del point[2]
-        ball_points = np.array(ball_points, dtype="int32")
-        # Thinner the line, so that the trajectory is closer to the actual flight path and feel
-        cv2.polylines(temp_frame, [ball_points], False, color, 10, lineType=cv2.LINE_AA)
-        frame = cv2.addWeighted(
-            temp_frame, trajectory_weight, frame, 1 - trajectory_weight, 0
-        )
-        last_ball = tuple(traj[-1][:-1])
-        # Make the end ball smaller, so that it does not cover too much of the screen
-        cv2.circle(frame, tuple(last_ball), 8, (255, 255, 255), -1)
+    ball_points = copy.deepcopy(traj)
+    color = ball_points[-1][2]  # Grab color before removing
+    for point in ball_points:
+        del point[2]
+    ball_points_np = np.array(ball_points, dtype="int32")
+
+    cv2.polylines(temp_frame, [ball_points_np], False, color, 10, lineType=cv2.LINE_AA)
+    frame = cv2.addWeighted(temp_frame, trajectory_weight, frame, 1 - trajectory_weight, 0)
+
+    last_ball = tuple(traj[-1][:-1])
+    cv2.circle(frame, last_ball, 8, (255, 255, 255), -1)
+
     return frame
 
 
-def fill_lost_tracking(frame_list: list) -> None:
+def _remove_outliers(x_data: list, y_data: list) -> tuple[list, list]:
+    """Remove outlier points using median velocity filtering (3x median threshold)."""
+    if len(x_data) < 5:
+        return x_data, y_data
+
+    # Compute inter-point velocities once
+    velocities = [abs(x_data[i] - x_data[i - 1]) for i in range(1, len(x_data))]
+    if not velocities:
+        return x_data, y_data
+
+    median_vel = np.median(velocities)
+    threshold = median_vel * 3.0
+
+    clean_x, clean_y = [x_data[0]], [y_data[0]]
+    for i in range(1, len(x_data)):
+        if velocities[i - 1] <= threshold:
+            clean_x.append(x_data[i])
+            clean_y.append(y_data[i])
+
+    return clean_x, clean_y
+
+
+def fill_lost_tracking(frame_list: list[FrameInfo]) -> None:
+    """Interpolate missing ball positions using quadratic polynomial fitting."""
     balls_x = [frame.ball[0] for frame in frame_list if frame.ball_in_frame]
     balls_y = [frame.ball[1] for frame in frame_list if frame.ball_in_frame]
 
-    # If there are no or almost no ball detection points, skip the filling, avoid polyfit error
-    # At least three points are needed to fit the quadratic polynomial
+    # Need at least 3 points for quadratic fit
     if len(balls_x) < 3:
         return
 
-    # 移除異常值（使用 IQR 方法）
-    def remove_outliers(x_data, y_data):
-        if len(x_data) < 5:
-            return x_data, y_data
-        
-        # 計算 X 方向的速度變化
-        velocities = []
-        for i in range(1, len(x_data)):
-            dx = abs(x_data[i] - x_data[i-1])
-            velocities.append(dx)
-        
-        if not velocities:
-            return x_data, y_data
-        
-        # 使用中位數過濾異常值
-        median_vel = np.median(velocities)
-        threshold = median_vel * 3  # 3倍中位數作為閾值
-        
-        clean_x, clean_y = [x_data[0]], [y_data[0]]
-        for i in range(1, len(x_data)):
-            dx = abs(x_data[i] - x_data[i-1])
-            if dx <= threshold:
-                clean_x.append(x_data[i])
-                clean_y.append(y_data[i])
-        
-        return clean_x, clean_y
-    
-    # 清理異常值
-    balls_x, balls_y = remove_outliers(balls_x, balls_y)
-    
+    balls_x, balls_y = _remove_outliers(balls_x, balls_y)
+
     if len(balls_x) < 3:
         return
 
-    # Get the polynomial equation
     curve = np.polyfit(balls_x, balls_y, 2)
     poly = np.poly1d(curve)
 
-    lost_sections = []
+    # Identify sections where the ball lost tracking
+    lost_sections: list[list[int]] = []
     in_lost = False
-    frame_count = 0
 
-    # Get the sections where the ball is lost tracked
     for idx, frame in enumerate(frame_list):
-        if frame.ball_lost_tracking and frame_count == 0:
+        if frame.ball_lost_tracking and not in_lost:
             in_lost = True
             lost_sections.append([])
-
-        if in_lost and not (frame.ball_lost_tracking):
+        elif not frame.ball_lost_tracking:
             in_lost = False
-            frame_count = 0
 
         if in_lost:
             lost_sections[-1].append(idx)
-            frame_count += 1
 
-    # Modify the frames in lost section with the approximated ball
+    # Fill lost sections with polynomial-interpolated positions
     for lost_section in lost_sections:
-        if lost_section:
-            prev_frame = frame_list[lost_section[0] - 1]
-            last_frame = frame_list[lost_section[-1] + 1]
-            color = prev_frame.ball_color
+        if not lost_section:
+            continue
 
-            lost_idx = [frame_list[i] for i in lost_section]
+        prev_idx = lost_section[0] - 1
+        next_idx = lost_section[-1] + 1
+        if prev_idx < 0 or next_idx >= len(frame_list):
+            continue
 
-            # Speed is the x difference for each frame
-            diff = last_frame.ball[0] - prev_frame.ball[0]
-            speed = int(diff / (len(lost_idx) + 1))
+        prev_frame = frame_list[prev_idx]
+        last_frame = frame_list[next_idx]
+        color = prev_frame.ball_color
 
-            for idx, frame in enumerate(lost_idx):
-                x = prev_frame.ball[0] + (speed * (idx + 1))
-                y = int(poly(x))
-                frame.ball_in_frame = True
-                frame.ball = (x, y)
-                frame.ball_color = color
-                # print('Fill', x, y)
+        diff = last_frame.ball[0] - prev_frame.ball[0]
+        speed = int(diff / (len(lost_section) + 1))
+
+        for i, idx in enumerate(lost_section):
+            frame = frame_list[idx]
+            x = prev_frame.ball[0] + (speed * (i + 1))
+            y = int(poly(x))
+            frame.ball_in_frame = True
+            frame.ball = (x, y)
+            frame.ball_color = color
 
 
 def distance(x: tuple, y: tuple) -> float:
-    temp = (x[0] - y[0]) ** 2 + (x[1] - y[1]) ** 2
-    return temp ** (0.5)
+    """Euclidean distance between two 2D points."""
+    return float(np.hypot(x[0] - y[0], x[1] - y[1]))

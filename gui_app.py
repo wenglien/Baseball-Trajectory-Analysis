@@ -442,9 +442,14 @@ class SpeedgunApp(tk.Tk):
         new_h = int(img_h * ratio)
         
         img_pil = img_pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # Delete previous image to prevent memory leak from accumulating PhotoImage refs
+        if hasattr(self, '_tk_image_id') and self._tk_image_id:
+            self.video_canvas.delete(self._tk_image_id)
         self.tk_image = ImageTk.PhotoImage(img_pil)
-        
-        self.video_canvas.create_image(canvas_w//2, canvas_h//2, anchor="center", image=self.tk_image)
+        self._tk_image_id = self.video_canvas.create_image(
+            canvas_w // 2, canvas_h // 2, anchor="center", image=self.tk_image
+        )
 
     def run_analysis(self):
         if not self.video_paths:

@@ -1,9 +1,20 @@
+from __future__ import annotations
+
+import logging
 import cv2
 import numpy as np
 import copy
+from typing import Optional
 from image_registration import cross_correlation_shifts
 from src.utils import draw_ball_curve, fill_lost_tracking
 from src.FrameInfo import FrameInfo
+
+log = logging.getLogger(__name__)
+
+
+def kmh_to_mph(kmh: float) -> float:
+    """Convert km/h to mph."""
+    return kmh * 0.621371
 
 
 def generate_overlay(
@@ -13,9 +24,9 @@ def generate_overlay(
     fps: int,
     outputPath: str,
     show_preview: bool = True,
-    speed_info: dict = None,
+    speed_info: Optional[dict] = None,
 ) -> None:
-    print("Saving overlay result to", outputPath)
+    log.info("Saving overlay result to %s", outputPath)
     
     codecs_to_try = [
         ("mp4v", cv2.VideoWriter_fourcc(*"mp4v")),
@@ -31,10 +42,10 @@ def generate_overlay(
             out = cv2.VideoWriter(outputPath, codec, fps, (width, height))
             if out.isOpened():
                 codec_name = name
-                print(f"使用編解碼器：{codec_name}")
+                log.info("Using codec: %s", codec_name)
                 break
         except Exception as e:
-            print(f"編解碼器 {name} 失敗：{e}")
+            log.debug("Codec %s failed: %s", name, e)
             if out:
                 out.release()
             out = None
@@ -102,34 +113,25 @@ def generate_overlay(
             # Draw the last small tail, make the trajectory length and ball speed fit, so that the trajectory will not appear suddenly
             background_frame = draw_ball_curve(background_frame, trajectory, max_points=25)
         
-        # 繪製出球點標記（如果有的話）
+        # Draw release point marker (with boundary check)
         if speed_info and 'release_point' in speed_info:
             release_pt = speed_info['release_point']
-            # 繪製出球點：較大的白色圓圈帶綠色邊框
-            cv2.circle(background_frame, release_pt, 12, (0, 255, 0), 3)  # 綠色外圈
-            cv2.circle(background_frame, release_pt, 8, (255, 255, 255), -1)  # 白色實心
-            # 添加文字標籤
-            cv2.putText(
-                background_frame,
-                "Release",
-                (release_pt[0] + 15, release_pt[1] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2,
-                cv2.LINE_AA
-            )
+            rx, ry = release_pt
+            if 0 <= rx < width and 0 <= ry < height:
+                cv2.circle(background_frame, release_pt, 12, (0, 255, 0), 3)
+                cv2.circle(background_frame, release_pt, 8, (255, 255, 255), -1)
+                cv2.putText(
+                    background_frame, "Release",
+                    (rx + 15, ry - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA
+                )
 
         # 在畫面上顯示球速資訊
         if speed_info and ('release_speed_kmh' in speed_info or 'initial_speed_kmh' in speed_info):
-            # 創建半透明黑色背景
+            # Semi-transparent background overlay
             overlay = background_frame.copy()
-            
-            # 轉換函數：km/h to mph
-            def kmh_to_mph(kmh):
-                return kmh * 0.621371
-            
-            # 根據是否有出手球速決定顯示內容
+
+            # Build info lines based on available speed data
             if speed_info.get('release_speed_kmh'):
                 # 有出手球速時的完整顯示
                 ball_speed_kmh = speed_info['release_speed_kmh']
@@ -212,12 +214,12 @@ def generate_overlay(
                     break
             except Exception as e:
                 # If the preview window fails (e.g. in a non-GUI environment), continue execution but do not show
-                print(f"無法顯示預覽視窗（可忽略）：{e}")
+                log.debug("Preview window unavailable: %s", e)
 
         try:
             out.write(result_frame)
         except Exception as e:
-            print(f"寫入影片 frame 時發生錯誤：{e}")
+            log.error("Error writing video frame: %s", e)
             break
     
     # Release resources
@@ -225,7 +227,7 @@ def generate_overlay(
         try:
             out.release()
         except Exception as e:
-            print(f"警告：釋放影片寫入器時發生錯誤：{e}")
+            log.warning("Error releasing video writer: %s", e)
     try:
         cv2.destroyAllWindows()
     except Exception:
