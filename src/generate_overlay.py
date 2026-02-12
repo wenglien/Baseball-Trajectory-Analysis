@@ -125,6 +125,33 @@ def generate_overlay(
                     (rx + 15, ry - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA
                 )
+                # Display release point coordinates
+                coord_text = f"({rx}, {ry})"
+                cv2.putText(
+                    background_frame, coord_text,
+                    (rx + 15, ry + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1, cv2.LINE_AA
+                )
+        
+        # Draw receive point marker (with boundary check)
+        if speed_info and 'receive_point' in speed_info:
+            receive_pt = speed_info['receive_point']
+            rcx, rcy = receive_pt
+            if 0 <= rcx < width and 0 <= rcy < height:
+                cv2.circle(background_frame, receive_pt, 12, (255, 0, 0), 3)
+                cv2.circle(background_frame, receive_pt, 8, (255, 255, 255), -1)
+                cv2.putText(
+                    background_frame, "Receive",
+                    (rcx + 15, rcy - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv2.LINE_AA
+                )
+                # Display receive point coordinates
+                coord_text = f"({rcx}, {rcy})"
+                cv2.putText(
+                    background_frame, coord_text,
+                    (rcx + 15, rcy + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 0, 0), 1, cv2.LINE_AA
+                )
 
         # 在畫面上顯示球速資訊
         if speed_info and ('release_speed_kmh' in speed_info or 'initial_speed_kmh' in speed_info):

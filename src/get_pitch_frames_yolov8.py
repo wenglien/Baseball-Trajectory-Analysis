@@ -708,6 +708,11 @@ def get_pitch_frames_yolov8(
             if release_point:
                 speed_info['release_point'] = release_point
             
+            # 添加 receive_point（接球點）到 speed_info 以便在 overlay 中繪製
+            # receive_point 是軌跡的最後一個點（球到達捕手位置）
+            if len(ball_trajectory) > 0:
+                speed_info['receive_point'] = ball_trajectory[-1]
+            
             # Log speed results
             if speed_info and not speed_info.get('error'):
                 method = speed_info.get('calculation_method', 'unknown')

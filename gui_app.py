@@ -19,6 +19,10 @@ try:
     from src.pipelines.yolov8_pipeline import run_yolov8_pipeline
 except ImportError:
     pass
+try:
+    from scripts.preprocess_video import preprocess_videos
+except Exception:
+    preprocess_videos = None
 
 class SpeedgunApp(tk.Tk):
     def __init__(self):
@@ -467,18 +471,31 @@ class SpeedgunApp(tk.Tk):
 
     def _worker_thread(self):
         try:
+            # 1) Preprocess user-provided videos (if available)
+            inputs = self.video_paths
+            preprocessed = inputs
+            if preprocess_videos is not None:
+                self.after(0, lambda: self.status_msg.set("Preprocessing video (ffmpeg)..."))
+                try:
+                    outs = preprocess_videos(inputs, output=None, method="interpolate", resolution="1080p")
+                    if outs:
+                        preprocessed = outs
+                except Exception as e:
+                    # Log but continue with original inputs
+                    print("Preprocess failed:", e)
+
             output_filename = "Overlay_Pro.mp4"
-            base_dir = os.path.dirname(self.video_paths[0])
+            base_dir = os.path.dirname(preprocessed[0]) if preprocessed else os.path.dirname(self.video_paths[0])
             output_path = os.path.join(base_dir, output_filename)
-            
-            # Run Pipeline
+
+            # 2) Run Pipeline on preprocessed files
             results = run_yolov8_pipeline(
-                self.video_paths,
+                preprocessed,
                 weights_path=os.path.abspath(self.yolov8_weights.get()),
                 output_path=output_path,
                 manual_distance_meters=self.pitch_dist.get(),
                 show_preview=False,
-                debug=True 
+                debug=True
             )
             
             if results and len(results) > 0:
