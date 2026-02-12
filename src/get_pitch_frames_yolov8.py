@@ -710,8 +710,13 @@ def get_pitch_frames_yolov8(
             
             # 添加 receive_point（接球點）到 speed_info 以便在 overlay 中繪製
             # receive_point 是軌跡的最後一個點（球到達捕手位置）
+            # 確保取到最後的實際軌跡點，而非計算過程中的中間值
             if len(ball_trajectory) > 0:
-                speed_info['receive_point'] = ball_trajectory[-1]
+                last_ball_point = ball_trajectory[-1]
+                speed_info['receive_point'] = last_ball_point
+                log.debug(f"receive_point set to ball_trajectory[-1]: {last_ball_point}")
+        else:
+            speed_info = {}
             
             # Log speed results
             if speed_info and not speed_info.get('error'):
